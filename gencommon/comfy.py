@@ -717,10 +717,12 @@ def read_history() -> list[GenRecord]:
     return list(records)
 
 
-def rename_in_history(renames: dict[str, str]) -> int:
+def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -> int:
     """記録の元のファイルと出来たファイルのパスを付け替える (名前を変えたあとに呼ぶ)。
 
     renames は {旧パス: 新パス}。大文字小文字は区別しない。戻り値は書き換えた行の数。
+    app_name を渡すと、別のアプリの記録 (%APPDATA%\\(app_name)\\comfy_history.txt) を書き換える
+    (PromptWordCrafter で結果を移したとき、それを元画像にした ImageMimicArt の記録も付け替えるなど)。
     """
     global _history_cache
     if not renames:
@@ -735,7 +737,11 @@ def rename_in_history(renames: dict[str, str]) -> int:
     changed = 0
     try:
         with _history_lock:
-            path = file_path("comfy_history.txt")
+            other = app_name is not None and app_name != store.APP_NAME
+            if other:
+                path = store.APP_DIR.parent / app_name / "comfy_history.txt"
+            else:
+                path = file_path("comfy_history.txt")
             if not path.is_file():
                 return 0
             lines = path.read_text(encoding="utf-8-sig").splitlines()
@@ -761,7 +767,8 @@ def rename_in_history(renames: dict[str, str]) -> int:
                 temp = path.with_name(path.name + ".tmp")
                 temp.write_text("".join(x + "\r\n" for x in out), encoding="utf-8", newline="")
                 temp.replace(path)
-                _history_cache = (None, 0, [])  # 書き換えたので、次は読み直す
+                if not other:
+                    _history_cache = (None, 0, [])  # 書き換えたので、次は読み直す
     except (OSError, UnicodeDecodeError):
         return 0
     return changed
