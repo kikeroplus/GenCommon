@@ -951,6 +951,19 @@ def has_prompt(wf: dict) -> bool:
     return bool(_prompt_slots(wf))
 
 
+def prompt_slot_labels(wf: dict) -> list[str]:
+    """本文を入れる場所の説明 (図の画面の確認用)。例: ノード 6「Positive」の text"""
+    labels = []
+    for inputs, key in _prompt_slots(wf):
+        for nid, node in wf.items():
+            if isinstance(node, dict) and node.get("inputs") is inputs:
+                name = _title(node) or _class_type(node)
+                part = f" (「{PROMPT_MARKER}」の部分)" if PROMPT_MARKER in str(inputs.get(key, "")) else ""
+                labels.append(f"ノード {nid}「{name}」の {key}{part}")
+                break
+    return labels
+
+
 def prompt_slot_problem(wf: dict) -> Optional[str]:
     """プロンプトを入れる場所がなければ、その理由 (あれば None)。"""
     if _prompt_slots(wf):

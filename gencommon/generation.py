@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
 from . import app, comfy, enhancer, llm, reader
 from .comfy_dialogs import ComfySettingsDialog, GenerateDialog, GenInfoDialog, JobWindow
+from .diagram_dialog import DiagramGenerateDialog
 
 MAX_RUNNING_JOBS = 2  # 同じ接続先に同時に依頼する件数
 CONFIRM_JOB_COUNT = 30  # これを超える件数を登録するときは確かめる
@@ -311,12 +312,30 @@ class GenerationController(QObject):
         else:
             title = f"生成する - {captions[0][0].name}"
 
+        diagram = True  # 図の画面で始める (「いつもの画面で開く」で切り替える)
+        carry = None
         while True:
-            dialog = GenerateDialog(title, [(source.name, text) for source, text in captions], prefill, self.window)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
+            names = [(source.name, text) for source, text in captions]
+            if diagram:
+                dialog = DiagramGenerateDialog(title, names, prefill, self.window, carry,
+                                               sources=[source for source, _text in captions],
+                                               save_caption=self.save_caption)
+            else:
+                dialog = GenerateDialog(title, names, prefill, self.window, carry)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            # 図の画面の「今読み取る」で読み取ったものは、そのまま使う (ジョブで読み直さない)
+            captions = [(source, text) for (source, _old), (_name, text) in zip(captions, dialog.captions)]
+            if accepted:
                 break
             if dialog.reopen is None:
                 return
+            carry = None
+            if dialog.switch_view:
+                # いつもの画面 ⇔ 図の画面: 入力した内容のまま、もう一方で開き直す
+                diagram = not diagram
+                prefill = dialog.reopen
+                carry = dialog.carry
+                continue
             # 「生成の設定...」が押された: 設定を出してから、入力していた内容で開き直す。
             # 設定を OK で閉じたときは、そこで選んだ接続先とワークフローを使う
             prefill = dialog.reopen
@@ -623,6 +642,29 @@ class GenerationController(QObject):
             ok = dialog.exec() == QDialog.DialogCode.Accepted
             if not dialog.imported:
                 return ok
+
+    def show_diagram_settings(self, sources: Optional[list[Path]] = None):
+        """「図で設定」: 図の画面で、次に生成するときの設定 (前回の値) を決めて保存する。生成はしない。
+
+        sources があれば、1 件目の本文 (説明プロンプト) で送る前の確認を見せる。
+        """
+        captions = [(source.name, self.prompt_for(source).strip()) for source in (sources or [])[:1]]
+        if not captions:
+            captions = [("", "")]  # ファイルを選んでいない (図の画面は〈本文〉で示す)
+        prefill = None
+        while True:
+            dialog = DiagramGenerateDialog("図で設定", captions, prefill, self.window, settings_only=True,
+                                           sources=(sources or [])[:1], save_caption=self.save_caption)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.show_status("生成の設定を保存しました。次に「生成する」で開いたときに、この設定で始まります。")
+                return
+            if dialog.reopen is None:
+                return
+            # 「生成の設定...」が押された: 設定を出してから、入力していた内容で開き直す
+            prefill = dialog.reopen
+            if self.show_settings():
+                prefill.url = ""
+                prefill.workflow_path = ""
 
     def has_history(self, path: Path) -> bool:
         return comfy.find_history_by_source(str(path)) is not None

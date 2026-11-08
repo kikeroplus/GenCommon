@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生成の相関図 (設定・処理・出力)</title>
+<style>
+:root {
+  --bg: #f7f7f5; --surface: #ffffff; --lane: #efefec; --text: #1f2328; --muted: #5d6670; --line: #8a939c;
+  --shared: #e6f0fb; --shared-line: #3b78c2; --opt: #fff8e6; --opt-line: #b7851f;
+  --out: #e9f6ec; --out-line: #3d8f55; --border: #d4d8dc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17191c; --surface: #22262b; --lane: #1d2024; --text: #e6e8ea; --muted: #a3abb3; --line: #7d8790;
+    --shared: #1c2c40; --shared-line: #6ea6e8; --opt: #33291a; --opt-line: #d9a845;
+    --out: #1b3323; --out-line: #6cc488; --border: #3a4047;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17191c; --surface: #22262b; --lane: #1d2024; --text: #e6e8ea; --muted: #a3abb3; --line: #7d8790;
+  --shared: #1c2c40; --shared-line: #6ea6e8; --opt: #33291a; --opt-line: #d9a845;
+  --out: #1b3323; --out-line: #6cc488; --border: #3a4047;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; line-height: 1.7; }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 1.5rem; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; margin: 32px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+p.lead { color: var(--muted); margin: 0 0 20px; }
+.figure { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.figure svg { display: block; width: 100%; min-width: 760px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 10px 2px 0; font-size: .9rem; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 22px; height: 12px; margin-right: 6px; vertical-align: -1px; border-radius: 3px; }
+.lg-shared::before { background: var(--shared); border: 1.5px solid var(--shared-line); }
+.lg-app::before { background: var(--surface); border: 1.5px solid var(--line); }
+.lg-opt::before { background: var(--opt); border: 1.5px dashed var(--opt-line); }
+.lg-out::before { background: var(--out); border: 1.5px solid var(--out-line); }
+ol.steps { padding-left: 1.4em; }
+ol.steps li { margin: 4px 0; }
+code { font-family: Consolas, monospace; font-size: .92em; background: var(--bg); padding: 0 4px; border-radius: 3px; }
+
+svg .lane { fill: var(--lane); }
+svg .head { fill: var(--text); font-size: 16px; font-weight: 700; }
+svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+svg .shared { fill: var(--shared); stroke: var(--shared-line); stroke-width: 1.5; }
+svg .opt { fill: var(--opt); stroke: var(--opt-line); stroke-width: 1.5; stroke-dasharray: 6 4; }
+svg .out { fill: var(--out); stroke: var(--out-line); stroke-width: 1.5; }
+svg .t { fill: var(--text); font-size: 15px; font-weight: 600; }
+svg .s { fill: var(--muted); font-size: 12.5px; }
+svg .flow { stroke: var(--line); stroke-width: 1.8; fill: none; marker-end: url(#ah); }
+svg .use { stroke: var(--shared-line); stroke-width: 1.5; fill: none; stroke-dasharray: 4 4; marker-end: url(#ahs); }
+svg .made { stroke: var(--out-line); stroke-width: 1.8; fill: none; marker-end: url(#aho); }
+svg .note { fill: var(--muted); font-size: 11.5px; }
+svg #ah path { fill: var(--line); }
+svg #ahs path { fill: var(--shared-line); }
+svg #aho path { fill: var(--out-line); }
+</style>
+</head>
+<body>
+<main>
+<h1>生成の相関図 (設定・処理・出力)</h1>
+<p class="lead">J-Rate・PromptWordCrafter・ImageMimicArt 共通。左がユーザーが設定する項目、真ん中が上から順に進む処理、右が出来るもの。</p>
+
+<div class="figure">
+<svg viewBox="0 0 1040 900" role="img" aria-label="左に設定、真ん中に上から下への処理、右に出力を並べた相関図">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ahs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="aho" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <!-- 列の帯と見出し -->
+  <rect class="lane" x="10" y="10" width="410" height="880" rx="10"/>
+  <rect class="lane" x="460" y="10" width="300" height="880" rx="10"/>
+  <rect class="lane" x="790" y="10" width="240" height="880" rx="10"/>
+  <text class="head" x="215" y="42" text-anchor="middle">ユーザーが設定する</text>
+  <text class="head" x="610" y="42" text-anchor="middle">処理 (上から順に)</text>
+  <text class="head" x="910" y="42" text-anchor="middle">出力</text>
+
+  <!-- 左: 設定 -->
+  <rect class="box" x="160" y="70" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="100" text-anchor="middle">元にするもの</text>
+  <text class="s" x="285" y="122" text-anchor="middle">画像を選ぶ (PWC はテキストファイル)</text>
+
+  <rect class="shared" x="20" y="174" width="110" height="280" rx="8"/>
+  <text class="t" x="75" y="282" text-anchor="middle">LLM の</text>
+  <text class="t" x="75" y="302" text-anchor="middle">接続</text>
+  <text class="s" x="75" y="330" text-anchor="middle">サーバーURL</text>
+  <text class="s" x="75" y="348" text-anchor="middle">モデル</text>
+  <text class="s" x="75" y="366" text-anchor="middle">送る画像の長い辺</text>
+
+  <rect class="shared" x="160" y="174" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="204" text-anchor="middle">読み取りプリセット</text>
+  <text class="s" x="285" y="226" text-anchor="middle">指示・雛形・温度 ＋ 読み直すか</text>
+
+  <rect class="box" x="160" y="278" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="308" text-anchor="middle">入力するプロンプト</text>
+  <text class="s" x="285" y="330" text-anchor="middle">{caption} で説明を入れる位置</text>
+
+  <rect class="shared" x="160" y="382" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="412" text-anchor="middle">エンハンサー</text>
+  <text class="s" x="285" y="434" text-anchor="middle">指示・雛形 {prompt}・温度</text>
+
+  <rect class="shared" x="160" y="486" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="516" text-anchor="middle">ベースプロンプト</text>
+  <text class="s" x="285" y="538" text-anchor="middle">動画用 / 画像用 ＋ 付けるか</text>
+
+  <rect class="shared" x="160" y="590" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="620" text-anchor="middle">ワークフロー</text>
+  <text class="s" x="285" y="642" text-anchor="middle">動画か画像かもここで決まる</text>
+
+  <rect class="shared" x="160" y="694" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="724" text-anchor="middle">接続先</text>
+  <text class="s" x="285" y="746" text-anchor="middle">ComfyUI の URL</text>
+
+  <rect class="box" x="160" y="798" width="250" height="72" rx="8"/>
+  <text class="t" x="285" y="828" text-anchor="middle">セット</text>
+  <text class="s" x="285" y="850" text-anchor="middle">上の設定をまとめて呼び出す</text>
+
+  <path class="use" d="M130,210 L157,210"/>
+  <path class="use" d="M130,418 L157,418"/>
+
+  <!-- 真ん中: 処理 -->
+  <rect class="opt" x="480" y="174" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="204" text-anchor="middle">1. 読み取り</text>
+  <text class="s" x="610" y="226" text-anchor="middle">LLM が画像を説明にする</text>
+
+  <rect class="box" x="480" y="278" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="308" text-anchor="middle">2. 組み立て</text>
+  <text class="s" x="610" y="330" text-anchor="middle">入力 ＋ 説明 ({caption} の位置へ)</text>
+
+  <rect class="opt" x="480" y="382" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="412" text-anchor="middle">3. エンハンサーで盛る</text>
+  <text class="s" x="610" y="434" text-anchor="middle">雛形の {prompt} に入れて LLM へ</text>
+
+  <rect class="opt" x="480" y="486" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="516" text-anchor="middle">4. ベースプロンプトを付ける</text>
+  <text class="s" x="610" y="538" text-anchor="middle">改行して最後に付ける</text>
+
+  <rect class="box" x="480" y="590" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="620" text-anchor="middle">5. ワークフローに入れる</text>
+  <text class="s" x="610" y="642" text-anchor="middle">{prompt} の目印へ (Negative は除く)</text>
+
+  <rect class="box" x="480" y="694" width="260" height="72" rx="8"/>
+  <text class="t" x="610" y="724" text-anchor="middle">6. ComfyUI で生成</text>
+  <text class="s" x="610" y="746" text-anchor="middle">ジョブ一覧で順に (一時停止・続きから)</text>
+
+  <!-- 処理の流れ -->
+  <path class="flow" d="M610,246 L610,275"/>
+  <path class="flow" d="M610,350 L610,379"/>
+  <path class="flow" d="M610,454 L610,483"/>
+  <path class="flow" d="M610,558 L610,587"/>
+  <path class="flow" d="M610,662 L610,691"/>
+
+  <!-- 設定 → 処理 -->
+  <path class="use" d="M410,120 C 450,130 450,180 477,196"/>
+  <path class="use" d="M410,210 L477,210"/>
+  <path class="use" d="M410,314 L477,314"/>
+  <path class="use" d="M410,418 L477,418"/>
+  <path class="use" d="M410,522 L477,522"/>
+  <path class="use" d="M410,626 L477,626"/>
+  <path class="use" d="M410,730 L477,730"/>
+
+  <!-- 右: 出力 -->
+  <rect class="out" x="800" y="174" width="220" height="72" rx="8"/>
+  <text class="t" x="910" y="204" text-anchor="middle">説明プロンプト</text>
+  <text class="s" x="910" y="226" text-anchor="middle">画像と同じ名前の .txt</text>
+
+  <rect class="out" x="800" y="382" width="220" height="72" rx="8"/>
+  <text class="t" x="910" y="412" text-anchor="middle">盛った本文</text>
+  <text class="s" x="910" y="434" text-anchor="middle">送る本文になる</text>
+
+  <rect class="out" x="800" y="694" width="220" height="72" rx="8"/>
+  <text class="t" x="910" y="724" text-anchor="middle">出来た画像・動画</text>
+  <text class="s" x="910" y="746" text-anchor="middle">アプリの出力先に保存</text>
+
+  <rect class="out" x="800" y="798" width="220" height="72" rx="8"/>
+  <text class="t" x="910" y="828" text-anchor="middle">生成の記録</text>
+  <text class="s" x="910" y="850" text-anchor="middle">使った設定・説明・盛った本文</text>
+
+  <!-- 処理 → 出力 -->
+  <path class="made" d="M740,210 L797,210"/>
+  <path class="made" d="M740,418 L797,418"/>
+  <path class="made" d="M740,730 L797,730"/>
+  <path class="made" d="M740,750 C 770,770 770,820 797,834"/>
+
+  <!-- 読み取り済みの .txt は次から使う -->
+  <path class="flow" d="M860,246 C 860,300 790,314 743,314"/>
+  <text class="note" x="874" y="282">読み取り済みなら</text>
+  <text class="note" x="874" y="298">これを使う</text>
+</svg>
+<div class="legend">
+  <span class="lg-shared">共有の設定 (どのアプリで変えても 3 つに効く)</span>
+  <span class="lg-app">アプリごと・その場で決めるもの</span>
+  <span class="lg-opt">選んだときだけ通る処理</span>
+  <span class="lg-out">出来るもの</span>
+</div>
+</div>
+
+<h2>処理の補足</h2>
+<ol class="steps">
+  <li><b>読み取り</b> (J-Rate・ImageMimicArt): 読み取りプリセットを選んだときだけ。読み取り済みの画像は <code>.txt</code> をそのまま使い、「読み取り済みでも読み直す」なら読み直す。同じ画像を何回ぶん頼んでも読み取りは 1 回。</li>
+  <li><b>組み立て</b> (J-Rate): 入力に <code>{caption}</code> があればそこに説明、なければ「説明 + 改行 + 入力」。入力が空なら説明だけ。PromptWordCrafter は編集欄の本文、ImageMimicArt は説明プロンプトがそのまま本文になる。</li>
+  <li><b>エンハンサー</b>: 選んだときだけ。「なし」なら素通り。</li>
+  <li><b>ベースプロンプト</b>: 「付ける」がオンのときだけ。ワークフローが動画用なら動画用、画像用なら画像用。</li>
+  <li><b>ワークフローに入れる</b>: <code>{prompt}</code> の目印があればそこ、なければ Positive / User Prompt のノード、なければ CLIPTextEncode。Negative と、実際に使われない側には入れない。</li>
+  <li><b>生成</b>: 接続先の ComfyUI へ。一時停止してから続けても、済んだ処理はやり直さない。</li>
+</ol>
+<p>セットは接続先・ワークフロー・プロンプト・秒数・読み取りプリセット (名前)・読み直すか・エンハンサー (名前) を覚える (アプリごと)。名前が共有の一覧になければ「なし」になる。もう 1 つの図: <a href="relations.html">relations.html</a></p>
+</main>
+</body>
+</html>

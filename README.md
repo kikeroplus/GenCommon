@@ -16,6 +16,7 @@ J-Rate (C#) は言語が違うので部品は使いませんが、同じ決ま�
 | `comfy.py` | プリセット・セット・記録・エクスポート / インポート・ワークフローの書き換え・ComfyUI とのやりとり |
 | `generation.py` | 生成ジョブ (同時 2 件、続きから始める、一時停止、読み取り → 盛る → ComfyUI) |
 | `comfy_dialogs.py` | 生成の設定・生成する・生成ジョブ・生成時の設定の画面 |
+| `diagram_dialog.py` | 生成する: 図の画面 (左に設定・真ん中に処理・右に送る前の確認。`docs/relations-columns.html` の並び) |
 | `llm.py` / `presets.py` | ローカル LLM の呼び出し、LLM のプリセット (エンハンサー・読み取り) の登録 |
 | `enhancer.py` / `reader.py` | エンハンサー (AI で盛る)、読み取り (画像 → 説明プロンプト) とその設定の画面 |
 

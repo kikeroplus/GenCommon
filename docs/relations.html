@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生成の相関図</title>
+<style>
+:root {
+  --bg: #f7f7f5; --surface: #ffffff; --text: #1f2328; --muted: #5d6670; --line: #8a939c;
+  --shared: #e6f0fb; --shared-line: #3b78c2; --opt: #fff8e6; --opt-line: #b7851f; --border: #d4d8dc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17191c; --surface: #22262b; --text: #e6e8ea; --muted: #a3abb3; --line: #7d8790;
+    --shared: #1c2c40; --shared-line: #6ea6e8; --opt: #33291a; --opt-line: #d9a845; --border: #3a4047;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17191c; --surface: #22262b; --text: #e6e8ea; --muted: #a3abb3; --line: #7d8790;
+  --shared: #1c2c40; --shared-line: #6ea6e8; --opt: #33291a; --opt-line: #d9a845; --border: #3a4047;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; line-height: 1.7; }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 1.5rem; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; margin: 36px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+p.lead { color: var(--muted); margin: 0 0 20px; }
+.figure { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.figure svg { display: block; width: 100%; min-width: 760px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 10px 2px 0; font-size: .9rem; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 22px; height: 12px; margin-right: 6px; vertical-align: -1px; border-radius: 3px; }
+.lg-shared::before { background: var(--shared); border: 1.5px solid var(--shared-line); }
+.lg-step::before { background: var(--surface); border: 1.5px solid var(--line); }
+.lg-opt::before { background: var(--opt); border: 1.5px dashed var(--opt-line); }
+ol.steps { padding-left: 1.4em; }
+ol.steps li { margin: 4px 0; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; background: var(--surface); font-size: .95rem; }
+th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background: var(--bg); font-weight: 600; }
+code { font-family: Consolas, monospace; font-size: .92em; background: var(--bg); padding: 0 4px; border-radius: 3px; }
+
+svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+svg .shared { fill: var(--shared); stroke: var(--shared-line); stroke-width: 1.5; }
+svg .opt { fill: var(--opt); stroke: var(--opt-line); stroke-width: 1.5; stroke-dasharray: 6 4; }
+svg .t { fill: var(--text); font-size: 15px; font-weight: 600; }
+svg .s { fill: var(--muted); font-size: 12.5px; }
+svg .arrow { stroke: var(--line); stroke-width: 1.8; fill: none; marker-end: url(#ah); }
+svg .use { stroke: var(--shared-line); stroke-width: 1.5; fill: none; stroke-dasharray: 4 4; marker-end: url(#ahs); }
+svg .band { fill: var(--muted); font-size: 12px; }
+svg #ah path { fill: var(--line); }
+svg #ahs path { fill: var(--shared-line); }
+</style>
+</head>
+<body>
+<main>
+<h1>生成の相関図</h1>
+<p class="lead">J-Rate・PromptWordCrafter・ImageMimicArt 共通。接続先・読み取り・エンハンサー・プロンプト・ベースプロンプトなどが、どうつながって ComfyUI に送られるか。</p>
+
+<h2>1. プロンプトが送られるまで</h2>
+<div class="figure">
+<svg viewBox="0 0 1040 640" role="img" aria-label="元画像から生成までの流れと、各段で使う設定">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ahs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <text class="band" x="20" y="14">共有の設定 (%APPDATA%\GenCommon)</text>
+  <text class="band" x="20" y="634">共有の設定 (%APPDATA%\GenCommon)</text>
+
+  <!-- 上の段: 共有の設定 -->
+  <rect class="shared" x="210" y="22" width="200" height="62" rx="8"/>
+  <text class="t" x="310" y="48" text-anchor="middle">読み取りプリセット</text>
+  <text class="s" x="310" y="70" text-anchor="middle">指示・雛形・温度</text>
+
+  <rect class="shared" x="480" y="22" width="260" height="62" rx="8"/>
+  <text class="t" x="610" y="48" text-anchor="middle">LLM の接続</text>
+  <text class="s" x="610" y="70" text-anchor="middle">サーバーURL・モデル・長い辺</text>
+
+  <rect class="shared" x="790" y="22" width="200" height="62" rx="8"/>
+  <text class="t" x="890" y="48" text-anchor="middle">エンハンサー</text>
+  <text class="s" x="890" y="70" text-anchor="middle">指示・雛形 {prompt}・温度</text>
+
+  <path class="use" d="M480,53 L413,53"/>
+  <path class="use" d="M740,53 L787,53"/>
+
+  <!-- 2 段目: 読み取り -->
+  <rect class="box" x="20" y="130" width="150" height="80" rx="8"/>
+  <text class="t" x="95" y="166" text-anchor="middle">元画像</text>
+  <text class="s" x="95" y="188" text-anchor="middle">選んだ画像</text>
+
+  <rect class="opt" x="210" y="130" width="200" height="80" rx="8"/>
+  <text class="t" x="310" y="160" text-anchor="middle">読み取り</text>
+  <text class="s" x="310" y="181" text-anchor="middle">LLM が画像を説明にする</text>
+  <text class="s" x="310" y="199" text-anchor="middle">未読み取り・読み直すときだけ</text>
+
+  <rect class="box" x="455" y="130" width="210" height="80" rx="8"/>
+  <text class="t" x="560" y="160" text-anchor="middle">説明プロンプト</text>
+  <text class="s" x="560" y="181" text-anchor="middle">画像と同じ名前の .txt</text>
+  <text class="s" x="560" y="199" text-anchor="middle">読み取り済みならこれを使う</text>
+
+  <!-- 3 段目: 組み立てと盛る -->
+  <rect class="box" x="20" y="260" width="220" height="80" rx="8"/>
+  <text class="t" x="130" y="290" text-anchor="middle">入力したプロンプト</text>
+  <text class="s" x="130" y="311" text-anchor="middle">J-Rate: 生成の画面</text>
+  <text class="s" x="130" y="329" text-anchor="middle">PWC: 編集欄の本文</text>
+
+  <rect class="box" x="420" y="260" width="280" height="80" rx="8"/>
+  <text class="t" x="560" y="290" text-anchor="middle">組み立て</text>
+  <text class="s" x="560" y="311" text-anchor="middle">{caption} があればそこに説明</text>
+  <text class="s" x="560" y="329" text-anchor="middle">なければ 説明 + 改行 + 入力</text>
+
+  <rect class="opt" x="760" y="260" width="260" height="80" rx="8"/>
+  <text class="t" x="890" y="290" text-anchor="middle">エンハンサーで盛る</text>
+  <text class="s" x="890" y="311" text-anchor="middle">雛形の {prompt} に入れて LLM へ</text>
+  <text class="s" x="890" y="329" text-anchor="middle">「なし」なら素通り</text>
+
+  <!-- 4 段目: 送る -->
+  <rect class="opt" x="770" y="410" width="240" height="80" rx="8"/>
+  <text class="t" x="890" y="440" text-anchor="middle">＋ ベースプロンプト</text>
+  <text class="s" x="890" y="461" text-anchor="middle">改行して後ろに付ける</text>
+  <text class="s" x="890" y="479" text-anchor="middle">チェックでオン・オフ</text>
+
+  <rect class="box" x="520" y="410" width="220" height="80" rx="8"/>
+  <text class="t" x="630" y="440" text-anchor="middle">ワークフローの入れ先</text>
+  <text class="s" x="630" y="461" text-anchor="middle">{prompt} の目印があればそこ</text>
+  <text class="s" x="630" y="479" text-anchor="middle">Negative には入れない</text>
+
+  <rect class="box" x="270" y="410" width="210" height="80" rx="8"/>
+  <text class="t" x="375" y="440" text-anchor="middle">ComfyUI で生成</text>
+  <text class="s" x="375" y="461" text-anchor="middle">ジョブ一覧で順に</text>
+  <text class="s" x="375" y="479" text-anchor="middle">一時停止・続きから</text>
+
+  <rect class="box" x="20" y="410" width="210" height="80" rx="8"/>
+  <text class="t" x="125" y="440" text-anchor="middle">出来た画像・動画</text>
+  <text class="s" x="125" y="461" text-anchor="middle">生成の記録に</text>
+  <text class="s" x="125" y="479" text-anchor="middle">使った設定がすべて残る</text>
+
+  <!-- 下の段: 共有の設定 -->
+  <rect class="shared" x="770" y="560" width="240" height="62" rx="8"/>
+  <text class="t" x="890" y="586" text-anchor="middle">ベースプロンプト</text>
+  <text class="s" x="890" y="608" text-anchor="middle">動画用 / 画像用の 2 つ</text>
+
+  <rect class="shared" x="520" y="560" width="220" height="62" rx="8"/>
+  <text class="t" x="630" y="586" text-anchor="middle">ワークフロー</text>
+  <text class="s" x="630" y="608" text-anchor="middle">動画か画像かもここで決まる</text>
+
+  <rect class="shared" x="270" y="560" width="210" height="62" rx="8"/>
+  <text class="t" x="375" y="586" text-anchor="middle">接続先</text>
+  <text class="s" x="375" y="608" text-anchor="middle">ComfyUI の URL</text>
+
+  <!-- 流れ -->
+  <path class="arrow" d="M170,170 L207,170"/>
+  <path class="arrow" d="M410,170 L452,170"/>
+  <path class="arrow" d="M560,210 L560,257"/>
+  <path class="arrow" d="M240,300 L417,300"/>
+  <path class="arrow" d="M700,300 L757,300"/>
+  <path class="arrow" d="M890,340 L890,407"/>
+  <path class="arrow" d="M770,450 L743,450"/>
+  <path class="arrow" d="M520,450 L483,450"/>
+  <path class="arrow" d="M270,450 L233,450"/>
+
+  <!-- 設定から段へ -->
+  <path class="use" d="M310,84 L310,127"/>
+  <path class="use" d="M890,84 L890,257"/>
+  <path class="use" d="M890,560 L890,493"/>
+  <path class="use" d="M630,560 L630,493"/>
+  <path class="use" d="M375,560 L375,493"/></svg>
+<div class="legend">
+  <span class="lg-shared">共有の設定 (どのアプリで変えても 3 つに効く)</span>
+  <span class="lg-step">いつも通る段</span>
+  <span class="lg-opt">選んだときだけ通る段</span>
+</div>
+</div>
+
+<ol class="steps">
+  <li><b>読み取り</b> (J-Rate・ImageMimicArt): 読み取りプリセットを選ぶと、元画像を LLM に送って説明プロンプトを作り、画像と同じ名前の <code>.txt</code> に書く。読み取り済みの画像は <code>.txt</code> をそのまま使う (「読み取り済みでも読み直す」で読み直す)。同じ画像を何回ぶん頼んでも読み取りは 1 回。</li>
+  <li><b>組み立て</b> (J-Rate): 入力に <code>{caption}</code> があればそこに説明を入れ、なければ「説明 + 改行 + 入力」。入力が空なら説明だけ。読み取りなしなら <code>{caption}</code> は空になる。</li>
+  <li><b>エンハンサー</b>: 選んでいれば、エンハンサーの雛形の <code>{prompt}</code> に 2 の結果を入れて LLM に送り、返ってきた文 (盛った本文) に差し替える。</li>
+  <li><b>ベースプロンプト</b>: 生成の画面のチェックがオンなら、ワークフローが動画用なら動画用、画像用なら画像用のベースプロンプトを、改行をはさんで最後に付ける。</li>
+  <li><b>入れ先</b>: ワークフローの文字列に <code>{prompt}</code> の目印があればそこを置き換える。なければ Positive / User Prompt のノード、なければ CLIPTextEncode。タイトルに Negative とあるノードと、実際には使われない側 (Switch など) には入れない。</li>
+  <li><b>生成</b>: 接続先の ComfyUI に送る。ジョブは「読み取り → 盛る → ComfyUI」の順に進み、一時停止してから続けても、済んだ段はやり直さない。</li>
+</ol>
+
+<h2>2. 設定の置き場所</h2>
+<div class="table-wrap"><table>
+<tr><th>共有 (<code>%APPDATA%\GenCommon</code>、3 つのアプリで同じ)</th><th>アプリごと (<code>%APPDATA%\アプリ名</code>)</th></tr>
+<tr><td>
+接続先の一覧 / ワークフローの一覧<br>
+ベースプロンプト (動画用・画像用)<br>
+読み取りプリセット / エンハンサーの一覧<br>
+LLM の接続 (サーバーURL・読み取り用モデル・エンハンサー用モデル・送る画像の長い辺)
+</td><td>
+どの接続先・ワークフロー・プリセットを選んでいるか (番号)<br>
+セット / プロンプトのプリセット / 前回の値 (秒数など)<br>
+ベースプロンプトを付けるかのチェック<br>
+生成の記録 / ジョブ一覧
+</td></tr>
+</table></div>
+<p>共有の一覧を「上へ / 下へ」で並べ替えると、ほかのアプリの選んでいる番号も合わせて直る。</p>
+
+<h2>3. セットが覚えるもの (アプリごと)</h2>
+<div class="table-wrap"><table>
+<tr><th>項目</th><th>覚え方</th></tr>
+<tr><td>接続先・ワークフロー</td><td>URL・ファイルの場所</td></tr>
+<tr><td>プロンプト・秒数・プロンプトのプリセット</td><td>そのときの値</td></tr>
+<tr><td>読み取りプリセット・読み取り済みでも読み直す</td><td>名前とチェック。名前が共有の一覧になければ「なし」にして知らせる</td></tr>
+<tr><td>エンハンサー</td><td>名前。共有の一覧になければ「なし」にして知らせる</td></tr>
+</table></div>
+<p>セットは名前で共有の設定を指すだけなので、共有の読み取りプリセットやエンハンサーの中身を直すと、それを指すすべてのセットに効く。</p>
+
+<h2>4. アプリごとの違い</h2>
+<div class="table-wrap"><table>
+<tr><th></th><th>J-Rate</th><th>PromptWordCrafter</th><th>ImageMimicArt</th></tr>
+<tr><th>元にするもの</th><td>選んだ画像・動画</td><td>テキストファイル</td><td>元画像</td></tr>
+<tr><th>読み取り</th><td>あり</td><td>なし</td><td>あり</td></tr>
+<tr><th>送る本文</th><td>入力 + 説明 (組み立て)</td><td>編集欄の本文</td><td>説明プロンプト (右の枠で直せる)</td></tr>
+<tr><th>エンハンサー</th><td>生成時</td><td>編集の段階と生成時</td><td>生成時</td></tr>
+<tr><th>ベースプロンプト</th><td colspan="3">共通 (同じ文を使う。付けるかのチェックはアプリごと)</td></tr>
+</table></div>
+
+<h2>5. 生成の記録に残るもの</h2>
+<p>接続先・ワークフロー・入力したプロンプト・ベースプロンプト・秒数に加えて、読み取りプリセット、送った時点の説明、エンハンサー、盛った本文。「生成時の設定」で見られ、記録から同じ設定で生成し直せる (読み取りとエンハンサーは名前で選び直す)。</p>
+</main>
+</body>
+</html>

@@ -530,8 +530,9 @@ class GenerateDialog(QDialog):
     """
 
     def __init__(self, title: str, captions: list[tuple[str, str]],
-                 prefill: Optional[comfy.GenRequest], parent=None):
+                 prefill: Optional[comfy.GenRequest], parent=None, carry: Optional[dict] = None):
         super().__init__(parent)
+        carry = carry or {}
         self.setWindowTitle(title)
         self.resize(640, 0)
         pf = app.profile()
@@ -545,6 +546,9 @@ class GenerateDialog(QDialog):
         self.reread = False  # 読み取り済みのものも読み直す
         self.enhancer_preset: Optional[enhancer.LlmPreset] = None  # AI で盛ってから送るときのエンハンサー
         self.reopen: Optional[comfy.GenRequest] = None  # 「生成の設定...」を押して閉じたときの各欄の内容
+        self.switch_view = False  # 「図で開く」/「いつもの画面で開く」を押して閉じた
+        self.carry: dict = {}  # 画面を切り替えるときに持っていく、reopen にない欄 (回数・セット・読み直す)
+        self._wf_data: Optional[dict] = None  # 選んでいるワークフロー (読めないときは None)
         self._base_prompt = ""
         self._integer_seconds = False
         self._relabeling_set = False
@@ -570,8 +574,8 @@ class GenerateDialog(QDialog):
         set_row.addWidget(self.delete_set)
         layout.addLayout(set_row)
         # 前回選んでいたセットを選んだ状態にする (欄の中身はそこから入れ直さない)
-        last = comfy.last_set()
-        if last >= 0 and not self._sets[last].is_empty:
+        last = carry.get("set", comfy.last_set())
+        if 0 <= last < len(self._sets) and not self._sets[last].is_empty:
             self.set_box.setCurrentIndex(last)
         self.save_set.setEnabled(self.set_box.currentIndex() >= 0)
         self.delete_set.setEnabled(self.set_box.currentIndex() >= 0)
@@ -679,9 +683,9 @@ class GenerateDialog(QDialog):
         reader_row.addWidget(self.reader_box, 1)
         self.reread_check = QCheckBox("読み取り済みでも読み直す")
         self.reread_check.setToolTip("オンにすると、説明プロンプトのある画像も読み取り直して .txt を上書きします")
-        self.reread_check.setChecked(comfy.load("reader_reread.txt") == "1")
+        self.reread_check.setChecked(carry.get("reread", comfy.load("reader_reread.txt") == "1"))
         reader_row.addWidget(self.reread_check)
-        reader_settings = QPushButton("設定...")
+        self.reader_settings_button = reader_settings = QPushButton("設定...")
         reader_settings.setToolTip("読み取りの設定 (サーバーURL、モデル、読み取りプリセットの登録)")
         reader_settings.clicked.connect(self._reader_settings)
         reader_row.addWidget(reader_settings)
@@ -702,7 +706,7 @@ class GenerateDialog(QDialog):
         self.enhancer_box = QComboBox()
         self.enhancer_box.setMaxVisibleItems(20)
         enhancer_row.addWidget(self.enhancer_box, 1)
-        enhancer_settings = QPushButton("設定...")
+        self.enhancer_settings_button = enhancer_settings = QPushButton("設定...")
         enhancer_settings.setToolTip("エンハンサーの設定 (指示文の登録、LLM のモデル)")
         enhancer_settings.clicked.connect(self._enhancer_settings)
         enhancer_row.addWidget(enhancer_settings)
@@ -727,7 +731,7 @@ class GenerateDialog(QDialog):
 
         repeat_row = QHBoxLayout()
         repeat_row.addWidget(QLabel("回数"))
-        self.repeat_edit = QLineEdit("1")
+        self.repeat_edit = QLineEdit(str(carry.get("repeat", "1")))
         self.repeat_edit.setFixedWidth(60)
         self.repeat_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         repeat_row.addWidget(self.repeat_edit)
@@ -740,7 +744,7 @@ class GenerateDialog(QDialog):
 
         # ボタン
         bottom = QHBoxLayout()
-        settings_button = QPushButton("生成の設定...")
+        self.settings_button = settings_button = QPushButton("生成の設定...")
         settings_button.setToolTip(
             "接続先・ワークフロー・ベースプロンプト" + ("・出力フォルダ" if pf.output_folder else "") + "の登録や並び替え"
         )
@@ -748,7 +752,7 @@ class GenerateDialog(QDialog):
         self.copy_button.setToolTip(
             f"今の接続先・ワークフロー・長さ (1 {pf.unit}のときは{pf.prompt_word}も) をクリップボードにコピーします"
         )
-        paste_button = QPushButton("貼り付け")
+        self.paste_button = paste_button = QPushButton("貼り付け")
         paste_button.setToolTip(
             f"コピーした生成パラメーターの接続先・ワークフロー・長さを各欄に入れます (プロンプトは{pf.prompt_word}のまま)"
         )
@@ -757,9 +761,15 @@ class GenerateDialog(QDialog):
         bottom.addWidget(self.copy_button)
         bottom.addWidget(paste_button)
         bottom.addStretch(1)
+        self.view_button = QPushButton("図で開く")
+        self.view_button.setToolTip("設定・処理・出力を図のように並べた画面に切り替えます (入力した内容はそのまま)")
+        self.view_button.setAutoDefault(False)
+        self.view_button.clicked.connect(self._switch_view)
+        bottom.addWidget(self.view_button)
+        bottom.addSpacing(12)
         self.ok_button = QPushButton(f"{len(captions)} {pf.unit}を生成する" if self.batch else "生成する")
         self.ok_button.setAutoDefault(False)
-        cancel = QPushButton("キャンセル")
+        self.cancel_button = cancel = QPushButton("キャンセル")
         cancel.setAutoDefault(False)
         bottom.addWidget(self.ok_button)
         bottom.addWidget(cancel)
@@ -957,6 +967,7 @@ class GenerateDialog(QDialog):
             if problem:
                 raise comfy.ComfyError(problem)
             video = comfy.is_video_workflow(wf)
+            self._wf_data = wf
             wf_seconds = comfy.get_duration(wf)
             self._integer_seconds = comfy.duration_is_integer(wf)
             if self.profile.reads:
@@ -966,6 +977,7 @@ class GenerateDialog(QDialog):
                 )
         except comfy.ComfyError as exc:
             error = str(exc)
+            self._wf_data = None
         self._workflow_error = error
         self.source_hint.setVisible(bool(self.source_hint.text()))
 
@@ -1081,6 +1093,15 @@ class GenerateDialog(QDialog):
     def _open_settings(self):
         self.reopen = self._fields()
         comfy.set_use_base_prompt(self.base_check.isChecked())  # 開き直したときも同じ状態に
+        self.reject()
+
+    def _switch_view(self):
+        """いつもの画面と図の画面を切り替える。入力した内容を持って閉じ、呼び出し側がもう一方で開き直す。"""
+        self.reopen = self._fields()
+        self.carry = {"repeat": self.repeat_edit.text().strip() or "1", "set": self.set_box.currentIndex(),
+                      "reread": self.reread_check.isChecked()}
+        comfy.set_use_base_prompt(self.base_check.isChecked())
+        self.switch_view = True
         self.reject()
 
     def _paste(self):
