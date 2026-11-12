@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import app, bulk_edit, comfy, enhancer, reader, store
+from . import app, bulk_edit, comfy, enhancer, inserts, reader, store
 
 
 def _c() -> app.Colors:
@@ -876,6 +877,117 @@ class SharedLocationDialog(QDialog):
 # ----------------------------------------------------------------------
 # 生成する
 # ----------------------------------------------------------------------
+class InsertRow(QWidget):
+    """差し込みの 1 枠: 使う / 名前 / フォルダ / 選択... と、盛る前に入れる / 次のファイル / 最初に戻す。"""
+
+    changed = Signal()
+
+    def __init__(self, index: int, parent=None):
+        super().__init__(parent)
+        self.index = index
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        top = QHBoxLayout()
+        self.use = QCheckBox()
+        self.use.setToolTip("オンにすると、ジョブ 1 件ごとにこのフォルダのテキストを 1 つずつ順に足します")
+        top.addWidget(self.use)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText(inserts.default_name(index))
+        self.name.setFixedWidth(90)
+        self.name.setToolTip("枠の名前 (記録・確認の画面に出します)")
+        top.addWidget(self.name)
+        self.folder = QLineEdit()
+        self.folder.setPlaceholderText("テキスト (.txt) を入れたフォルダ")
+        top.addWidget(self.folder, 1)
+        browse = QPushButton("選択...")
+        browse.setAutoDefault(False)
+        browse.clicked.connect(self._browse)
+        top.addWidget(browse)
+        layout.addLayout(top)
+        bottom = QHBoxLayout()
+        bottom.addSpacing(24)
+        self.before = QCheckBox("盛る前に入れる")
+        self.before.setToolTip(
+            "オン: プロンプトのあとに入れてから、エンハンサーで一緒に盛ります (言い換えられることがあります)。\n"
+            "オフ: 盛ったあとに、そのまま付けます (一字一句そのまま送ります)。\n"
+            "エンハンサーが「なし」のときは、盛る前に入れるものを先に並べます。"
+        )
+        bottom.addWidget(self.before)
+        self.status = QLabel()
+        bottom.addWidget(self.status, 1)
+        self.reset_button = QPushButton("最初に戻す")
+        self.reset_button.setAutoDefault(False)
+        self.reset_button.setToolTip("このフォルダを、次は名前順の最初のファイルから使います (すぐに覚えます)")
+        self.reset_button.clicked.connect(self._reset)
+        bottom.addWidget(self.reset_button)
+        layout.addLayout(bottom)
+        self.problem: Optional[str] = None
+        self.use.toggled.connect(self.refresh)
+        self.before.toggled.connect(lambda _on: self.changed.emit())
+        self.folder.editingFinished.connect(self.refresh)
+        self.name.textChanged.connect(lambda _t: self.changed.emit())
+
+    def set_slot(self, slot: inserts.Slot):
+        for w in (self.use, self.before, self.name, self.folder):
+            w.blockSignals(True)
+        self.use.setChecked(slot.use)
+        self.before.setChecked(slot.before)
+        self.name.setText(slot.name)
+        self.folder.setText(slot.folder)
+        for w in (self.use, self.before, self.name, self.folder):
+            w.blockSignals(False)
+        self.refresh()
+
+    def slot(self) -> inserts.Slot:
+        return inserts.Slot(self.name.text().strip(), self.folder.text().strip(), self.use.isChecked(),
+                            self.before.isChecked())
+
+    def peek(self) -> Optional[inserts.Peek]:
+        try:
+            return inserts.peek(self.folder.text())
+        except inserts.InsertError:
+            return None
+
+    def refresh(self, *_args):
+        """次に使うファイルを出す。使う枠でフォルダを使えなければ、その理由 (problem)。"""
+        self.problem = None
+        folder = self.folder.text().strip()
+        text, color = "", _c().hint
+        if folder:
+            try:
+                text = inserts.peek(folder).describe()
+            except inserts.InsertError as exc:
+                text = str(exc)
+                if self.use.isChecked():
+                    self.problem = text
+                    color = _c().error
+        elif self.use.isChecked():
+            self.problem = text = "フォルダを選んでください"
+            color = _c().error
+        if not self.use.isChecked() and text:
+            text = "(使わない) " + text
+        self.status.setText(_shorten(text, 70))
+        self.status.setToolTip(text)
+        self.status.setStyleSheet(f"color: {color};")
+        self.reset_button.setEnabled(bool(folder) and bool(inserts.last_used(folder)))
+        self.changed.emit()
+
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(self, "差し込みのフォルダを選択", self.folder.text().strip())
+        if folder:
+            self.folder.setText(str(Path(folder)))
+            self.use.setChecked(True)
+            self.refresh()
+
+    def _reset(self):
+        inserts.reset(self.folder.text())
+        # 同じフォルダを使っているほかの枠も出し直す
+        for row in self.parent().findChildren(InsertRow) if self.parent() else [self]:
+            row.refresh()
+        self.refresh()
+
+
 class GenerateDialog(QDialog):
     """「生成する」のたびに出す、接続先・ワークフロー・読み取り・エンハンサー・長さ・回数の入力画面。
 
@@ -924,7 +1036,7 @@ class GenerateDialog(QDialog):
         set_row.addWidget(self.set_box, 1)
         self.save_set = QPushButton("保存")
         self.save_set.setToolTip(
-            "今の接続先・ワークフロー・長さ・" + ("読み取り・" if pf.reads else "") + "エンハンサーを、選んでいる番号にまとめて保存します"
+            "今の接続先・ワークフロー・長さ・" + ("読み取り・" if pf.reads else "") + "エンハンサー・差し込みを、選んでいる番号にまとめて保存します"
         )
         self.delete_set = QPushButton("削除")
         set_row.addWidget(self.save_set)
@@ -1084,6 +1196,20 @@ class GenerateDialog(QDialog):
         self._enhancer_note = ""  # 記録のエンハンサーが見つからなかったときの知らせ
         self.enhancer_box.currentIndexChanged.connect(self._show_enhancer_hint)
 
+        # 差し込み (フォルダのテキストを、ジョブ 1 件ごとに 1 つずつ順に足す)
+        self.insert_slots: list[inserts.Slot] = inserts.load_slots()  # 「生成する」で決まった枠 (呼び出し側が使う)
+        self.insert_group = QGroupBox("差し込み (フォルダのテキストを、1 件ごとに順に足す。最後まで使ったら最初に戻る)")
+        insert_layout = QVBoxLayout(self.insert_group)
+        insert_layout.setContentsMargins(8, 4, 8, 4)
+        self.insert_rows: list[InsertRow] = []
+        for i, slot in enumerate(self.insert_slots):
+            row = InsertRow(i, self.insert_group)
+            row.set_slot(slot)
+            row.changed.connect(self._update_error)
+            insert_layout.addWidget(row)
+            self.insert_rows.append(row)
+        layout.addWidget(self.insert_group)
+
         # 長さ・回数
         seconds_row = QHBoxLayout()
         seconds_row.addWidget(QLabel("長さ"))
@@ -1169,6 +1295,8 @@ class GenerateDialog(QDialog):
             )
             self._apply_reader(prefill.reader)
             self._apply_enhancer(prefill.enhancer)
+            # 記録に差し込みがなければ、そのときは使っていない (入力中の内容は欄の形で持つ)
+            self._apply_inserts(prefill.inserts if prefill.inserts is not None else [])
         self._show_enhancer_hint()
         self._update_machine_hint()
 
@@ -1346,7 +1474,16 @@ class GenerateDialog(QDialog):
         index = self._current_enhancer()
         if index >= 0:
             r.enhancer = {"name": self._enhancers[index].name, "index": index}
+        r.inserts = inserts.to_data(self._current_slots())
         return r
+
+    # --- 差し込み -----------------------------------------------------
+    def _current_slots(self) -> list[inserts.Slot]:
+        return [row.slot() for row in self.insert_rows]
+
+    def _apply_inserts(self, data):
+        for row, slot in zip(self.insert_rows, inserts.apply(self._current_slots(), data)):
+            row.set_slot(slot)
 
     def _apply_workflow(self):
         """選んでいるワークフローを読んで、プロンプトを渡せるか・長さを変えられるか・元画像を送るかを決める。
@@ -1410,6 +1547,11 @@ class GenerateDialog(QDialog):
             error = "読み取りプリセットが登録されていないので、説明プロンプトを読み取れません。「設定...」で登録してください。"
         if error is None and pf.skip_empty and not self.batch and not self.captions[0][1].strip():
             error = f"{pf.source_word}の{pf.prompt_word}が空です。{pf.prompt_word}を書いてから生成してください。"
+        if error is None:
+            for row in getattr(self, "insert_rows", []):
+                if row.problem:
+                    error = f"差し込み「{row.slot().label(row.index)}」: {row.problem}"
+                    break
         self.error_label.setText(error or "")
         self.error_label.setVisible(error is not None)
         self.ok_button.setEnabled(error is None)
@@ -1437,6 +1579,8 @@ class GenerateDialog(QDialog):
             self._select_enhancer(found)
             if s.enhancer and found < 0:
                 notes.append(f"セットのエンハンサー「{s.enhancer}」は登録にないので、「なし」にしました。")
+        if s.inserts is not None:
+            self._apply_inserts(s.inserts)
         self._reader_note = "\n".join(notes)
         self._enhancer_note = ""
         self._show_enhancer_hint()
@@ -1476,6 +1620,7 @@ class GenerateDialog(QDialog):
             s.reread = self.reread_check.isChecked()
         index = self._current_enhancer()
         s.enhancer = self._enhancers[index].name if index >= 0 else ""
+        s.inserts = inserts.to_data(self._current_slots())
         comfy.set_sets(self._sets)
         self._relabel_set(n)
 
@@ -1575,6 +1720,8 @@ class GenerateDialog(QDialog):
         index = self._current_enhancer()
         self.enhancer_preset = self._enhancers[index] if index >= 0 else None
         enhancer.set_last_generate_index(index)
+        self.insert_slots = self._current_slots()
+        inserts.save_slots(self.insert_slots)
         comfy.set_use_base_prompt(use_base)
         self.request = request
         self.repeat = repeat
@@ -1811,6 +1958,8 @@ class GenInfoDialog(QDialog):
             row("読み取りプリセット", req.reader_name or "(名前なし)")
         if req.enhancer is not None:
             row("エンハンサー", req.enhancer_name or "(名前なし)")
+        if req.inserts:
+            row("差し込み", inserts.summary(req.inserts))
         layout.addLayout(form)
 
         layout.addWidget(QLabel(f"{pf.prompt_word} (送った時点のもの)" if req.prompt is not None
@@ -1824,11 +1973,21 @@ class GenInfoDialog(QDialog):
                 f"※ {pf.prompt_word}は、このあと書き換えられています。やり直すときは今の{pf.prompt_word}を使います。"
             ))
         if req.enhanced_prompt is not None:
-            layout.addWidget(QLabel("AI で盛ったプロンプト (実際に送った文。このあとにベースプロンプトを付けて送りました)"))
+            layout.addWidget(QLabel("盛ったプロンプト (AI で盛って、実際に送った文。このあとにベースプロンプトを付けて送りました)"))
             enhanced = QPlainTextEdit(req.enhanced_prompt)
             enhanced.setReadOnly(True)
             enhanced.setFixedHeight(120)
             layout.addWidget(enhanced)
+        for item in req.inserts or []:
+            when = "盛る前に入れました" if item.get("before") else "そのまま付けました"
+            if req.enhancer is None:
+                when = "付けました"
+            layout.addWidget(QLabel(
+                f"差し込み「{item.get('name', '')}」 ({item.get('file', '')}。{item.get('folder', '')} から。{when})"))
+            text = QPlainTextEdit(str(item.get("text") or ""))
+            text.setReadOnly(True)
+            text.setFixedHeight(60)
+            layout.addWidget(text)
         if req.base_prompt:
             layout.addWidget(QLabel("ベースプロンプト (プロンプトのあとに続けて送りました)"))
             base = QPlainTextEdit(req.base_prompt)
@@ -1846,7 +2005,8 @@ class GenInfoDialog(QDialog):
         again.setEnabled(has_source)
         again.setToolTip(
             f"今の{pf.prompt_word}で、同じ接続先・ワークフロー・長さ・" + ("読み取りプリセット・" if pf.reads else "")
-            + "エンハンサーでもう一度生成します (seed は変わります。エンハンサーを使ったときは、盛り直します"
+            + "エンハンサー・差し込みのフォルダでもう一度生成します (seed は変わります。エンハンサーを使ったときは、盛り直します。"
+            + "差し込みは、そのフォルダの次のファイルを使います"
             + (f"。{pf.prompt_word}がなければ読み取ります)" if pf.reads else ")")
         )
         again.clicked.connect(self._again)

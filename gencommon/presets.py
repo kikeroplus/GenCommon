@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from . import llm, store
 
 PRESET_COUNT = 20
-PROMPT_MARK = "{prompt}"  # 送る文の雛形で、元の文に置き換わる目印 (エンハンサー)
+PROMPT_MARK = "{prompt}"  # 送る文の雛形で、元のプロンプトに置き換わる目印 (エンハンサー)
 READ_TEMPLATE = "Write a text-to-image prompt that recreates this image."  # 読み取りで画像と一緒に送る既定の文
 DEFAULT_TEMPLATES = ("", PROMPT_MARK, READ_TEMPLATE)  # 送る文がこれだけで指示文がなければ未登録
 DEFAULT_TEMPERATURE = 0.7

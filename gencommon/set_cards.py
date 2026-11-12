@@ -139,6 +139,10 @@ class SetStrip(QWidget):
             self.scroll.ensureWidgetVisible(self.cards[current], 16, 0)
 
 
+def _insert_names(s: comfy.ComfySet) -> list[str]:
+    return [str(d.get("name") or "") for d in (s.inserts or []) if isinstance(d, dict) and d.get("use")]
+
+
 def describe_sets(sets: list[comfy.ComfySet], connections: list[tuple[str, str]], workflows: list[tuple[str, str]],
                   reads: bool, cache: Optional[dict] = None,
                   conflict: Optional[Callable[[str, str], str]] = None) -> list[SetInfo]:
@@ -189,6 +193,9 @@ def describe_sets(sets: list[comfy.ComfySet], connections: list[tuple[str, str]]
             steps.append("読取: " + ("—" if s.reader is None else (s.reader or "なし")))
         steps.append("盛る: " + ("—" if s.enhancer is None else (s.enhancer or "なし")))
         lines.append("  ".join(steps))
+        used = _insert_names(s)
+        if used:
+            lines.append("差込: " + "・".join(used))
         if notes:
             warn = True
             if not kind.startswith("⚠"):
@@ -201,6 +208,15 @@ def describe_sets(sets: list[comfy.ComfySet], connections: list[tuple[str, str]]
             if s.reread is not None:
                 tip.append("読み取り済みでも読み直す: " + ("する" if s.reread else "しない"))
         tip.append("エンハンサー: " + ("(この項目なし。選んでも変えない)" if s.enhancer is None else (s.enhancer or "なし")))
+        if s.inserts is None:
+            tip.append("差し込み: (この項目なし。選んでも変えない)")
+        else:
+            for d in s.inserts:
+                if isinstance(d, dict) and d.get("use"):
+                    when = "盛る前" if d.get("before") else "盛ったあと"
+                    tip.append(f"差し込み「{d.get('name', '')}」: {d.get('folder', '')} ({when})")
+            if not used:
+                tip.append("差し込み: なし")
         tip.extend(f"⚠ {n}" for n in notes)
         infos.append(SetInfo(s.name or "(名前なし)", kind, lines, "\n".join(tip), warn=warn))
     return infos

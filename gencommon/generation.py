@@ -4,7 +4,8 @@ J-Rate の JRate.cs「生成する (ComfyUI)」以降と同じ動き:
 同じ接続先には同時に 2 件まで送り、残りはアプリ側で待機させる。
 
 1 件のジョブは、読み取り (読み取りのあるアプリで、説明プロンプトがまだないとき・読み直すとき) →
-AI で盛る (エンハンサーを選んだとき) → ComfyUI の順に進む。同じ元画像の回数ぶんのジョブは、
+AI で盛る (エンハンサーを選んだとき) → ComfyUI の順に進む。差し込み (inserts.py) のファイルは、
+登録するときにジョブ 1 件ごとに割り当てておく。同じ元画像の回数ぶんのジョブは、
 最初の 1 件だけが読み取り、残りはそれを待って同じ説明を使う。
 
 終わっていないジョブは %APPDATA%/(アプリ名)/comfy_jobs.json に書いておき、
@@ -23,7 +24,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
-from . import app, comfy, enhancer, llm, reader
+from . import app, comfy, enhancer, inserts, llm, reader
 from .comfy_dialogs import ComfySettingsDialog, GenerateDialog, GenInfoDialog, JobWindow
 from .diagram_dialog import DiagramGenerateDialog
 
@@ -89,7 +90,7 @@ class _Signals(QObject):
     progress = Signal(object, str)
     submitted = Signal(object, str)  # job, prompt_id
     caption_read = Signal(object, str)  # job, 読み取った説明プロンプト
-    enhanced = Signal(object)  # job (AI で盛った本文が決まった)
+    enhanced = Signal(object)  # job (盛ったプロンプトが決まった)
     finished = Signal(object, object, object)  # job, outputs, error
 
 
@@ -359,15 +360,29 @@ class GenerationController(QObject):
         ) != QMessageBox.StandardButton.Ok:
             return
 
-        batch = total > 1
-        group = next(_groups)
+        # 差し込み: ジョブ 1 件ごとに、使う枠の次のファイルを割り当てる (全部割り当ててから位置を書く)
+        try:
+            picker = inserts.Picker(dialog.insert_slots)
+        except inserts.InsertError as exc:
+            QMessageBox.warning(self.window, title, f"差し込みのフォルダを使えないので、生成しませんでした。\n\n{exc}")
+            return
+        new_jobs = []
         to_read = 0
-        for source, text in captions:
-            need_read = p.reads and (dialog.reread or not text)
-            to_read += need_read
-            for _ in range(repeat):
-                req = request.copy(prompt=None if need_read else text)
-                self.jobs.append(GenJob(str(source), req, batch, need_read, group))
+        try:
+            batch = total > 1
+            group = next(_groups)
+            for source, text in captions:
+                need_read = p.reads and (dialog.reread or not text)
+                to_read += need_read
+                for _ in range(repeat):
+                    req = request.copy(prompt=None if need_read else text, inserts=picker.next())
+                    new_jobs.append(GenJob(str(source), req, batch, need_read, group))
+        except inserts.InsertError as exc:
+            picker.discard()
+            QMessageBox.warning(self.window, title, f"差し込みのフォルダを使えないので、生成しませんでした。\n\n{exc}")
+            return
+        picker.commit()
+        self.jobs.extend(new_jobs)
         if batch or self.paused:
             self.show_jobs()
         self._start_jobs()
@@ -409,7 +424,7 @@ class GenerationController(QObject):
                 if job.need_read and not prompt_id:
                     self._read(job, signals)
                 req = job.request
-                if req.enhancer is not None and req.enhanced_prompt is None and (req.prompt or "").strip():
+                if req.enhancer is not None and req.enhanced_prompt is None and (req.source_prompt or "").strip():
                     self._enhance(job, signals)
                 outputs = comfy.generate(
                     job.source, job.request, lambda text: signals.progress.emit(job, text), job.cancel,
@@ -476,16 +491,16 @@ class GenerationController(QObject):
     def _enhance(self, job: GenJob, signals: "_Signals"):
         """ComfyUI に送る前に、説明プロンプトを AI で盛る (裏のスレッドで呼ぶ)。
 
-        ジョブごとに盛るので、回数を増やすと毎回違う盛り方になる。盛った本文はジョブに残し、
-        続きから始めるときはもう盛らない。盛れなければジョブの失敗にする (元の本文のまま送らない)。
+        ジョブごとに盛るので、回数を増やすと毎回違う盛り方になる。盛ったプロンプトはジョブに残し、
+        続きから始めるときはもう盛らない。盛れなければジョブの失敗にする (元のプロンプトのまま送らない)。
         """
         signals.progress.emit(job, "AI で盛っています...")
-        text = self._wait_llm(job, lambda: enhancer.enhance_with(job.request.enhancer, job.request.prompt),
-                              "AI で盛れませんでした。", "AI で盛った結果が空でした。")
+        text = self._wait_llm(job, lambda: enhancer.enhance_with(job.request.enhancer, job.request.source_prompt),
+                              "AI で盛れませんでした。", "盛ったプロンプトが空でした。")
         job.request = job.request.copy(enhanced_prompt=text)  # 回数ぶんのジョブで写しを共有しないよう、作り直す
         signals.enhanced.emit(job)
         if self.paused:
-            raise comfy.GenerationHeld(sent=False)  # 盛った本文を持ったまま待機に戻り、再開を待つ
+            raise comfy.GenerationHeld(sent=False)  # 盛ったプロンプトを持ったまま待機に戻り、再開を待つ
 
     def _on_caption_read(self, job: GenJob, text: str):
         """読み取った説明を .txt に書き、同じ元画像を待っているジョブにも渡す。"""

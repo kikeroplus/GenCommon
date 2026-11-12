@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
-from . import comfy, enhancer, reader, set_cards, settings
+from . import comfy, enhancer, inserts, reader, set_cards, settings
 from .comfy_dialogs import GenerateDialog, _c, _hint, _one_line, _parse_seconds
 
 
@@ -128,6 +128,8 @@ class DiagramGenerateDialog(GenerateDialog):
                        self.conn_box.currentIndexChanged, self.seconds_edit.textChanged,
                        self.repeat_edit.textChanged, self.set_box.currentIndexChanged):
             signal.connect(self._refresh)
+        for row in self.insert_rows:
+            row.changed.connect(self._refresh)
         self._refresh()
         # 高さは中身が収まる分 (決めた高さで縮めると、欄が重なる)
         self.resize(1180, max(self.minimumSizeHint().height(), self.sizeHint().height()))
@@ -194,6 +196,9 @@ class DiagramGenerateDialog(GenerateDialog):
         box.layout().addLayout(row)
         box.layout().addWidget(self.enhancer_hint)
         steps.append(("enhance", "エンハンサーで盛る", True, box))
+
+        self.insert_group.setTitle("差し込み (1 件ごとに、フォルダの次のテキストを足す)")
+        steps.append(("insert", "差し込みを付ける", True, self.insert_group))
 
         box = self._group("ベースプロンプト (共有)")
         box.layout().addWidget(self.base_check)
@@ -374,6 +379,7 @@ class DiagramGenerateDialog(GenerateDialog):
                 reader.set_last_generate_index(index)
             comfy.save("reader_reread.txt", "1" if self.reread_check.isChecked() else "0")
         enhancer.set_last_generate_index(self._current_enhancer())
+        inserts.save_slots(self._current_slots())
         comfy.set_use_base_prompt(self.base_check.isChecked())
         self.accept()
 
@@ -493,8 +499,22 @@ class DiagramGenerateDialog(GenerateDialog):
 
         # 各段を通ったあとの文 (分からないところは〈〉で示す)
         after_source = f"〈読み取った{pf.prompt_word}〉" if will_read else text or f"〈{pf.prompt_word}〉"
-        after_enhance = "〈盛った本文〉＋" if enh else after_source
-        final = after_enhance + ("\n" + self._base_prompt if use_base else "")
+        # 差し込み: 使う枠の次のファイル (1 件目のジョブの分)
+        self._insert_items = []
+        for row in self.insert_rows:
+            slot = row.slot()
+            look = row.peek() if slot.use and not row.problem else None
+            if look is not None:
+                self._insert_items.append((slot.label(row.index), slot.before, look,
+                                           inserts.read_file(look.next_file)))
+        before_texts = [body for _n, before, _l, body in self._insert_items if before]
+        after_texts = [body for _n, before, _l, body in self._insert_items if not before]
+        enh_input = inserts.join(after_source, *before_texts)
+        self._enh_input = enh_input
+        after_enhance = "〈盛ったプロンプト〉" if enh else enh_input
+        after_insert = inserts.join(after_enhance, *after_texts)
+        self._after_insert = after_insert
+        final = inserts.join(after_insert, self._base_prompt if use_base else "")
 
         states = {}
         # 1. 読み取り / 本文
@@ -521,6 +541,13 @@ class DiagramGenerateDialog(GenerateDialog):
                                 else f"〈{pf.prompt_word}〉" if self._no_file else f"{name} の{pf.prompt_word}", False)
         # 2. 盛る
         states["enhance"] = (enh.name if enh else "なし (素通り)", enh is None)
+        # 差し込み
+        if self._insert_items:
+            states["insert"] = ("\n".join(
+                f"{name}: {look.next_file.name}" + (" (盛る前)" if before and enh else "")
+                for name, before, look, _body in self._insert_items), False)
+        else:
+            states["insert"] = ("なし (素通り)", True)
         # 3. ベース
         kind = "動画用" if self._wf_data is not None and comfy.is_video_workflow(self._wf_data) else "画像用"
         if not self._base_prompt:
@@ -579,12 +606,21 @@ class DiagramGenerateDialog(GenerateDialog):
             return f"{step} のあと: {pf.prompt_word} (.txt の内容)", text
         if key == "enhance":
             if enh is None:
-                return f"{step} のあと", f"エンハンサーは「なし」です。前の段の文をそのまま次へ渡します。\n\n{after_source}"
-            message = enhancer.user_message(enh.template, after_source)
+                return f"{step} のあと", f"エンハンサーは「なし」です。前の段の文をそのまま次へ渡します。\n\n{self._enh_input}"
+            message = enhancer.user_message(enh.template, self._enh_input)
             return (f"{step}: 生成のときに LLM に送る内容",
                     f"エンハンサー「{enh.name}」・モデル {settings.enhance_model()} で盛ります。"
                     "ジョブの番が来るたびに盛るので、回数を増やすと毎回違う盛り方になります。\n\n"
                     f"── 指示 (system) ──\n{enh.system}\n\n── 送る文 ──\n{message}")
+        if key == "insert":
+            if not self._insert_items:
+                return f"{step} のあと", "差し込みは使いません。前の段の文をそのまま次へ渡します。\n\n" + self._after_insert
+            lines = []
+            for name, before, look, _body in self._insert_items:
+                when = "盛る前に入れる (エンハンサーに渡す)" if before else "盛ったあとにそのまま付ける"
+                lines.append(f"・{name}: {look.describe()}  {when}")
+            lines.append("ジョブ 1 件ごとに次のファイルへ進みます (最後まで使ったら最初に戻ります)。")
+            return f"{step} のあと (1 件目の例)", "\n".join(lines) + "\n\n" + self._after_insert
         if key == "base":
             note = "" if use_base else (
                 "(ベースプロンプトを付けません)\n\n" if self._base_prompt else "(ベースプロンプトは未設定です)\n\n")

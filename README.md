@@ -21,6 +21,7 @@ J-Rate (C#) は言語が違うので部品は使いませんが、同じ決ま�
 | `diagram_dialog.py` | 生成する: 図の画面 (左に設定・真ん中に処理・右に送る前の確認。`docs/relations-columns.html` の並び) |
 | `llm.py` / `presets.py` | ローカル LLM の呼び出し、LLM のプリセット (エンハンサー・読み取り) の登録 |
 | `enhancer.py` / `reader.py` | エンハンサー (AI で盛る)、読み取り (画像 → 説明プロンプト) とその設定の画面 |
+| `inserts.py` | 差し込み (フォルダのテキストを 1 件ごとに順に足す)。J-Rate の `ComfyInserts.cs` と同じ動き |
 
 ## アプリでの使い方
 

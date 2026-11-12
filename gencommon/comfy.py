@@ -1,6 +1,6 @@
 """ComfyUI で画像・動画を生成する (PromptWordCrafter と ImageMimicArt で共通)。
 
-プロンプト (盛ったときは盛った本文) をワークフローのプロンプトの場所に入れ、
+プロンプト (盛ったときは盛ったプロンプト) をワークフローのプロンプトの場所に入れ、
 ベースプロンプトを改行をはさんで後ろに付ける。元画像のあるアプリ (ImageMimicArt) では、
 ワークフローに LoadImage があれば元画像も送る。出来たファイルの置き場所と名前はアプリが決める
 (app.Profile.output_path)。
@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import app, store
+from . import app, inserts, store
 
 DEFAULT_URL = "http://127.0.0.1:8188"
 PRESET_COUNT = 10
@@ -124,6 +124,7 @@ class ComfySet:
     reader: Optional[str] = None  # 読み取りプリセットの名前 (空 = なし)
     reread: Optional[bool] = None  # 読み取り済みでも読み直す
     enhancer: Optional[str] = None  # エンハンサーの名前 (空 = なし)
+    inserts: Optional[list] = None  # 差し込みの欄の形 (inserts.py。フォルダは値で覚える)
 
     @property
     def is_empty(self) -> bool:
@@ -145,11 +146,14 @@ class GenRequest:
     # AI で盛ってから送るときの、登録した時点のエンハンサーの写し
     # (name・system・template・temperature・url・model)。記録から読んだものは name だけ
     enhancer: Optional[dict] = None
-    enhanced_prompt: Optional[str] = None  # 盛ったあとの本文 (ジョブの番が来たときに決まる)
+    enhanced_prompt: Optional[str] = None  # 盛ったプロンプト (ジョブの番が来たときに決まる)
     # 読み取るときの、登録した時点の読み取りプリセットの写し
     # (name・system・template・temperature・url・model・max_side)。記録から読んだものは name だけ
     reader: Optional[dict] = None
     output_dir: str = ""  # 出力フォルダ (出力フォルダを持つアプリで、生成を始めたときのもの)
+    # 差し込み (inserts.py)。ジョブ・記録では使った枠ごとの {slot, name, folder, before, file, text}。
+    # 生成の画面の入力中の内容 (_fields) では欄の形 {slot, name, folder, before, use}。None = 持たない
+    inserts: Optional[list] = None
 
     @property
     def reader_name(self) -> str:
@@ -160,14 +164,19 @@ class GenRequest:
         return str((self.enhancer or {}).get("name", ""))
 
     @property
-    def full_prompt(self) -> Optional[str]:
+    def source_prompt(self) -> Optional[str]:
+        """エンハンサーに渡す文: 元のプロンプト + 盛る前に入れる差し込み (改行でつなぐ)。"""
         if self.prompt is None:
             return None
-        p = (self.prompt if self.enhanced_prompt is None else self.enhanced_prompt).strip()
-        b = (self.base_prompt or "").strip()
-        if not p:
-            return b
-        return p if not b else p + "\n" + b
+        return inserts.join(self.prompt, *inserts.texts(self.inserts, True))
+
+    @property
+    def full_prompt(self) -> Optional[str]:
+        """ComfyUI に送る文: (盛ったプロンプト か 元のプロンプト + 盛る前の差し込み) + 盛ったあとの差し込み + ベース。"""
+        if self.prompt is None:
+            return None
+        p = self.source_prompt if self.enhanced_prompt is None else self.enhanced_prompt
+        return inserts.join(p, *inserts.texts(self.inserts, False), self.base_prompt)
 
     def copy(self, **changes) -> "GenRequest":
         data = dict(self.__dict__)
@@ -569,6 +578,8 @@ def sets() -> list[ComfySet]:
             s.reread = bool(item.get("reread"))
         if "enhancer" in item:
             s.enhancer = _str(item, "enhancer")
+        if isinstance(item.get("inserts"), list):
+            s.inserts = [d for d in item["inserts"] if isinstance(d, dict)]
     return result
 
 
@@ -589,6 +600,8 @@ def set_sets(items: list[ComfySet]) -> None:
             item["reread"] = s.reread
         if s.enhancer is not None:
             item["enhancer"] = s.enhancer
+        if s.inserts is not None:
+            item["inserts"] = s.inserts
         data.append(item)
     save("comfy_sets.txt", json.dumps(data, ensure_ascii=False))
 
@@ -769,9 +782,12 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
     if req.reader is not None:
         record["reader"] = req.reader_name
     if req.enhancer is not None:
-        # prompt は元の本文のまま (「旧」の判定に使う)。実際に送った文は enhancedPrompt
+        # prompt は元のプロンプトのまま (「旧」の判定に使う)。実際に送った文は enhancedPrompt
         record["enhancer"] = req.enhancer_name
         record["enhancedPrompt"] = req.enhanced_prompt
+    if req.inserts:
+        # prompt には混ぜない (「旧」の判定に使うので)。使った枠ごとの名前・フォルダ・ファイル・中身
+        record["inserts"] = req.inserts
     try:
         with _history_lock:
             store.APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -922,6 +938,8 @@ def _to_record(data: dict) -> GenRecord:
         req.enhancer = {"name": _str(data, "enhancer")}
         if data.get("enhancedPrompt") is not None:
             req.enhanced_prompt = str(data["enhancedPrompt"])
+    if isinstance(data.get("inserts"), list):
+        req.inserts = [d for d in data["inserts"] if isinstance(d, dict)]
     if data.get("seconds") is not None:
         try:
             req.seconds = float(data["seconds"])
@@ -1119,7 +1137,8 @@ def prompt_slot_problem(wf: dict) -> Optional[str]:
             "このワークフローでプロンプトを入れる場所は、実際には使われていません "
             "(If/Else Switch の使われない側につながっているなど)。\n"
             f"ComfyUI で、画像に使われる文字欄に「{PROMPT_MARKER}」と書いてから、もう一度「Export (API)」で保存してください。"
-            f"\n「{PROMPT_MARKER}」があれば、そこをプロンプトに置き換えます (前後に書いた語はそのまま残ります)。"
+            f"\n「{PROMPT_MARKER}」があれば、そこをプロンプト (エンハンサーを使うときは盛ったプロンプト) に置き換えます"
+            "(前後に書いた語はそのまま残ります)。"
         )
     if len(_clip_text_nodes(wf)) > 1:
         return (
@@ -1131,7 +1150,7 @@ def prompt_slot_problem(wf: dict) -> Optional[str]:
         "文字列が直接入っている prompt 入力か、「CLIP Text Encode」のあるワークフローを指定してください。\n"
         "プロンプトを文字列ノード (Text など) から線でつないでいるときは、そのノードのタイトルに"
         "「Positive」か「User Prompt」を含めてください (「Negative」とあるノードには入れません)。\n"
-        f"どのノードでも、文字欄に「{PROMPT_MARKER}」と書けば、そこをプロンプトに置き換えます。"
+        f"どのノードでも、文字欄に「{PROMPT_MARKER}」と書けば、そこをプロンプト (エンハンサーを使うときは盛ったプロンプト) に置き換えます。"
     )
 
 

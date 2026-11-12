@@ -67,7 +67,7 @@ def snapshot(preset: LlmPreset) -> dict:
 
 
 def user_message(template: str, text: str) -> str:
-    """雛形の {prompt} を元の文に置き換える。目印がなければ雛形のあとに付ける。"""
+    """雛形の {prompt} を元のプロンプトに置き換える。目印がなければ雛形のあとに付ける。"""
     if PROMPT_MARK in template:
         return template.replace(PROMPT_MARK, text)
     return template.rstrip() + "\n\n" + text if template.strip() else text
@@ -118,8 +118,10 @@ class EnhancerSettingsDialog(QDialog):
             "エンハンサーのプリセット (生成 AI のモデルごとに登録します)",
             load_presets(), PRESETS_FILE, PROMPT_MARK,
             "指示文 (system) — モデルごとに推奨されている指示文を貼ります",
-            f"送る文の雛形 (user) — {PROMPT_MARK} が盛る前のプロンプトに置き換わります",
-            f"ふつうは {PROMPT_MARK} だけで十分です。{PROMPT_MARK} がないときは、雛形のあとにプロンプトを付けて送ります。",
+            f"送る文の雛形 (user) — {PROMPT_MARK} が元のプロンプト (盛る前) に置き換わります",
+            f"ふつうは {PROMPT_MARK} だけで十分です。{PROMPT_MARK} がないときは、雛形のあとに元のプロンプトを付けて送ります。\n"
+            f"{PROMPT_MARK} の前後に書いた文も AI に送られるので、盛ったプロンプトに混ざったり、言い換えられたり、"
+            "落とされたりします。必ずそのまま付けたい語はベースプロンプトに書きます (盛ったあとに付きます)。",
             "高いほど毎回違う盛り方になります (目安 0.5〜1.0)",
             None, index,
         )
