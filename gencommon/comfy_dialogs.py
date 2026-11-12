@@ -1706,13 +1706,36 @@ class JobWindow(QWidget):
         self.manager.set_paused(not self.manager.paused)
         self.refresh()
 
+    def _confirm_cancel(self, jobs, what: str) -> bool:
+        """キャンセルする前に確かめる (待機中・実行中のものだけ数える)。誤って押したときのため、既定は「いいえ」。"""
+        targets = [j for j in jobs if j.is_active]
+        if not targets:
+            return False
+        running = sum(1 for j in targets if j.is_running)
+        if len(targets) == 1:
+            text = f"このジョブをキャンセルしますか？\n\n{targets[0].file_name}"
+        else:
+            text = f"{what} {len(targets)} 件のジョブをキャンセルしますか？"
+        if running:
+            text += f"\n\n実行中のもの ({running} 件) は ComfyUI に中断を送ります。"
+        answer = QMessageBox.question(
+            self, "ジョブをキャンセル", text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
     def _cancel_selected(self):
-        for job in self._selected_jobs():
+        selected = self._selected_jobs()
+        if not self._confirm_cancel(selected, "選択した"):
+            return
+        for job in selected:
             self._cancel(job)
         self.refresh()
 
     def _cancel_all(self):
-        for job in list(self.manager.jobs):
+        jobs = list(self.manager.jobs)
+        if not self._confirm_cancel(jobs, "待機中・実行中の"):
+            return
+        for job in jobs:
             self._cancel(job)
         self.refresh()
 
