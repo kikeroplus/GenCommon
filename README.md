@@ -4,7 +4,8 @@ PromptWordCrafter と ImageMimicArt (どちらも Python + PySide6) が共通で
 J-Rate (C#) は言語が違うので部品は使いませんが、同じ決まりと同じ設定ファイルで動きます。
 
 - 決まりごと: `J-Rate\docs\generation-standard.md` (特に 11 章「3 つのアプリで共有するもの」)
-- 置き場所: `C:\Users\ilove\Desktop\WindowsApp\GenCommon\gencommon`。各アプリの `main.py` がこのフォルダを読み込み、EXE を作るときも `.spec` の `pathex` で取り込みます。
+- 置き場所: `C:\Users\ilove\Desktop\WindowsApp\AI_projects\GenCommon\gencommon`。各アプリの `main.py` がこのフォルダを読み込み、EXE を作るときも `.spec` の `pathex` で取り込みます。
+- J-Rate・PromptWordCrafter・ImageMimicArt・GenCommon は同じフォルダ (`AI_projects`) に並べて置きます (アプリは隣の `..\GenCommon` を探すので、移すときは 4 つまとめて移します)。
 
 ## 中身
 
@@ -16,6 +17,7 @@ J-Rate (C#) は言語が違うので部品は使いませんが、同じ決ま�
 | `comfy.py` | プリセット・セット・記録・エクスポート / インポート・ワークフローの書き換え・ComfyUI とのやりとり |
 | `generation.py` | 生成ジョブ (同時 2 件、続きから始める、一時停止、読み取り → 盛る → ComfyUI) |
 | `comfy_dialogs.py` | 生成の設定・生成する・生成ジョブ・生成時の設定の画面 |
+| `bulk_edit.py` | 「まとめて編集...」の画面 (まとめて削除・並べ替え・名前順・空きを詰める) と、結果を一覧に当てはめる `apply` |
 | `diagram_dialog.py` | 生成する: 図の画面 (左に設定・真ん中に処理・右に送る前の確認。`docs/relations-columns.html` の並び) |
 | `llm.py` / `presets.py` | ローカル LLM の呼び出し、LLM のプリセット (エンハンサー・読み取り) の登録 |
 | `enhancer.py` / `reader.py` | エンハンサー (AI で盛る)、読み取り (画像 → 説明プロンプト) とその設定の画面 |

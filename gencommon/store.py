@@ -463,6 +463,16 @@ def swap_indexes(shared_file: str, a: int, b: int) -> None:
                 pass
 
 
+def remap_indexes(shared_file: str, mapping: dict[int, int]) -> None:
+    """共有の一覧をまとめて並べ替えたとき (mapping は 元の番号 → 新しい番号、0 始まり)、すべてのアプリの番号を合わせる。"""
+    if not any(old != new for old, new in mapping.items()):
+        return
+    dirs = app_dirs()
+    if not any(_same(d, APP_DIR) for d in dirs):
+        dirs.append(APP_DIR)
+    _remap_indexes(shared_file, mapping, dirs)
+
+
 # ----------------------------------------------------------------------
 # 初めて共有するとき: このアプリの設定を共有に移す (generation-standard 11 章)
 # ----------------------------------------------------------------------

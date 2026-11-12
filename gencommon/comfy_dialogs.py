@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import app, bulk_delete, comfy, enhancer, reader, store
+from . import app, bulk_edit, comfy, enhancer, reader, store
 
 
 def _c() -> app.Colors:
@@ -136,8 +136,8 @@ class _PresetTab:
         buttons.addSpacing(24)
         self.save_button = QPushButton("プリセットを保存")
         self.delete_button = QPushButton("削除")
-        self.bulk_button = QPushButton("まとめて削除...")
-        self.bulk_button.setToolTip("登録してあるものから選んで、まとめて未登録にします (ほかの番号は動きません)")
+        self.bulk_button = QPushButton(bulk_edit.BUTTON_TEXT)
+        self.bulk_button.setToolTip(bulk_edit.BUTTON_TIP)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.delete_button)
         buttons.addWidget(self.bulk_button)
@@ -188,18 +188,21 @@ class _PresetTab:
         self._set_value_text("")
         self._relabel()
 
-    def bulk_delete(self, what: str, note: str = "") -> int:
-        """選んだものをまとめて未登録にする。戻り値は消した数 (やめたら 0)。"""
+    def bulk_edit(self, what: str, note: str = "") -> Optional[bulk_edit.Result]:
+        """まとめて削除・並べ替えをする。戻り値は当てはめた結果 (やめたら None)。"""
         self.list[:] = comfy.connections() if self._file == store.CONNECTIONS_FILE else comfy.workflows()
         self._relabel()
         items = [(i, self._label(p, i)) for i, p in enumerate(self.list) if not p.is_empty or p.name]
-        indexes = bulk_delete.ask(what, items, note, self.panel)
-        if not indexes:
-            return 0
-        self.list[:] = comfy.clear_presets(self._file, indexes)
+        result = bulk_edit.ask(what, items, note, self.panel)
+        if result is None:
+            return None
+        items_after, mapping = comfy.rearrange_presets(self._file, [i for i, _t in items], result)
+        self.list[:] = items_after
+        # 出していた枠が動いたら、その行き先を選ぶ (消したときは同じ番号のまま、欄を出し直す)
+        self.shown = mapping.get(self.shown, self.shown)
         self._relabel()
-        self._on_select(self.shown)  # 出している枠を消したときは欄も空にする
-        return len(indexes)
+        self._on_select(self.shown)
+        return result
 
     def _relabel(self):
         self._relabeling = True
@@ -331,9 +334,9 @@ class ComfySettingsDialog(QDialog):
         set_down = _move_button("▼ 下へ", "選んでいるセットを 1 つ下の番号と入れ替えます (押し続けると続けて動きます)")
         set_up.clicked.connect(lambda: self._move_set(-1))
         set_down.clicked.connect(lambda: self._move_set(1))
-        set_bulk = QPushButton("まとめて削除...")
-        set_bulk.setToolTip("登録してあるセットから選んで、まとめて未登録にします (ほかの番号は動きません)")
-        set_bulk.clicked.connect(self._bulk_delete_sets)
+        set_bulk = QPushButton(bulk_edit.BUTTON_TEXT)
+        set_bulk.setToolTip(bulk_edit.BUTTON_TIP)
+        set_bulk.clicked.connect(self._bulk_edit_sets)
         set_buttons.addWidget(set_bulk)
         set_buttons.addSpacing(24)
         set_buttons.addWidget(set_up)
@@ -406,8 +409,8 @@ class ComfySettingsDialog(QDialog):
         self.connection.save_button.clicked.connect(self._store_connection)
         self.workflow.save_button.clicked.connect(self._store_workflow)
         self.connection.delete_button.clicked.connect(self._delete_connection)
-        self.connection.bulk_button.clicked.connect(self._bulk_delete_connections)
-        self.workflow.bulk_button.clicked.connect(self._bulk_delete_workflows)
+        self.connection.bulk_button.clicked.connect(self._bulk_edit_connections)
+        self.workflow.bulk_button.clicked.connect(self._bulk_edit_workflows)
         self.workflow.delete_button.clicked.connect(lambda: self._delete(self.workflow, "ワークフロー"))
         test.clicked.connect(lambda: self._test(test))
         browse.clicked.connect(self._browse)
@@ -460,34 +463,54 @@ class ComfySettingsDialog(QDialog):
             self.folder_edit.clear()
             self._save_folder(old_url)
 
-    def _bulk_delete_connections(self):
-        n = self.connection.bulk_delete(
-            "接続先", "接続先は 3 つのアプリで共有しています。消した接続先のワークフローのフォルダも消します。")
-        if n:
+    @staticmethod
+    def _edited_text(what: str, result: bulk_edit.Result, extra: str = "") -> str:
+        moved = sum(1 for old, new in result.plan().items() if old != new)
+        parts = []
+        if result.deleted:
+            parts.append(f"{len(result.deleted)} 件を未登録に")
+        if moved:
+            parts.append(f"{moved} 件の番号を変更")
+        return f"{what}の {'し、'.join(parts)}しました" + extra
+
+    def _bulk_edit_connections(self):
+        result = self.connection.bulk_edit(
+            "接続先", "接続先は 3 つのアプリで共有しています。削除した接続先のワークフローのフォルダも消します。")
+        if result:
             self._folders = comfy.connection_folders()
             self._show_folder()
             self.workflow._relabel()
-            self._result(_c().ok, f"接続先を {n} 件未登録にしました")
+            self._result(_c().ok, self._edited_text("接続先", result))
 
-    def _bulk_delete_workflows(self):
-        n = self.workflow.bulk_delete(
-            "ワークフロー", "ワークフローは 3 つのアプリで共有しています。JSON のファイルは消しません。")
-        if n:
-            self._result(_c().ok, f"ワークフローを {n} 件未登録にしました (JSON のファイルはそのままです)")
+    def _bulk_edit_workflows(self):
+        result = self.workflow.bulk_edit(
+            "ワークフロー", "ワークフローは 3 つのアプリで共有しています。削除しても JSON のファイルは消しません。")
+        if result:
+            extra = " (JSON のファイルはそのままです)" if result.deleted else ""
+            self._result(_c().ok, self._edited_text("ワークフロー", result, extra))
 
-    def _bulk_delete_sets(self):
+    def _bulk_edit_sets(self):
         self._sets[:] = comfy.sets()  # ほかで保存したものを消さないよう読み直す
         for i, s in enumerate(self._sets):
             self.set_list.item(i).setText(s.label(i))
         items = [(i, s.label(i)) for i, s in enumerate(self._sets) if not s.is_empty]
-        indexes = bulk_delete.ask("セット", items, "セットはこのアプリだけのものです。", self)
-        if not indexes:
+        result = bulk_edit.ask("セット", items, "セットはこのアプリだけのものです。", self)
+        if result is None:
             return
-        for i in indexes:
-            self._sets[i] = comfy.ComfySet()
-            self.set_list.item(i).setText(self._sets[i].label(i))
+        current = comfy.sets()
+        new_sets, mapping = bulk_edit.apply(
+            current, [i for i, _t in items], result, comfy.ComfySet, lambda s: s.is_empty)
+        self._sets[:] = new_sets
+        for i, s in enumerate(self._sets):
+            self.set_list.item(i).setText(s.label(i))
         comfy.set_sets(self._sets)
-        self._result(_c().ok, f"セットを {len(indexes)} 件未登録にしました")
+        last = comfy.last_set()
+        if last in mapping and mapping[last] != last:
+            comfy.set_last_set(mapping[last])
+        row = self.set_list.currentRow()
+        if row in mapping:
+            self.set_list.setCurrentRow(mapping[row])
+        self._result(_c().ok, self._edited_text("セット", result))
 
     def _register_from_folders(self):
         folders = []  # (台の名前, フォルダ)。同じフォルダは 1 回

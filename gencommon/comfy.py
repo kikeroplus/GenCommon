@@ -313,26 +313,28 @@ def update_preset(file: str, index: int, preset: Optional[Preset]) -> list[Prese
     return items
 
 
-def clear_presets(file: str, indexes: list[int]) -> list[Preset]:
-    """共有の一覧 (接続先 / ワークフロー) の indexes の枠をまとめて未登録にする (ほかの枠は動かさない)。
+def rearrange_presets(file: str, listed: list[int], result) -> tuple[list[Preset], dict[int, int]]:
+    """共有の一覧 (接続先 / ワークフロー) に「まとめて編集」の結果 (bulk_edit.Result) を当てはめる。
 
-    読み直してから書く。接続先なら、そのワークフローのフォルダも消す。戻り値は書いたあとの一覧。
+    読み直してから書き、すべてのアプリの使用中の番号も並べ替えに合わせる。
+    削除した接続先は、そのワークフローのフォルダも消す (同じ URL がほかの枠に残っていれば残す)。
+    戻り値は (書いたあとの一覧, 元の番号 → 新しい番号)。
     """
-    items = connections() if file == store.CONNECTIONS_FILE else workflows()
-    urls = []
-    for i in indexes:
-        if 0 <= i < len(items):
-            urls.append(items[i].value)
-            items[i] = Preset()
+    from .bulk_edit import apply  # 画面の部品と同じファイルにあるので、使うときに読む
+
+    current = connections() if file == store.CONNECTIONS_FILE else workflows()
+    deleted_urls = [current[i].value for i in result.deleted if 0 <= i < len(current)]
+    items, mapping = apply(current, listed, result, Preset, lambda p: p.is_empty and not p.name)
     _save_presets(file, items, len(items))
-    if file == store.CONNECTIONS_FILE:
+    store.remap_indexes(file, mapping)
+    if file == store.CONNECTIONS_FILE and deleted_urls:
         folders = connection_folders()
         remaining = {_url_key(p.value) for p in items if not p.is_empty}
-        for url in urls:
-            if _url_key(url) not in remaining:  # 同じ URL がほかの枠に残っていれば、フォルダは残す
+        for url in deleted_urls:
+            if _url_key(url) not in remaining:
                 folders.pop(_url_key(url), None)
         save(store.CONNECTION_FOLDERS_FILE, "".join(f"{u}\t{f}\r\n" for u, f in folders.items()))
-    return items
+    return items, mapping
 
 
 def swap_presets(file: str, a: int, b: int) -> list[Preset]:
