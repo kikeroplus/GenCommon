@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import app, comfy, enhancer, reader, store
+from . import app, bulk_delete, comfy, enhancer, reader, store
 
 
 def _c() -> app.Colors:
@@ -135,8 +136,11 @@ class _PresetTab:
         buttons.addSpacing(24)
         self.save_button = QPushButton("プリセットを保存")
         self.delete_button = QPushButton("削除")
+        self.bulk_button = QPushButton("まとめて削除...")
+        self.bulk_button.setToolTip("登録してあるものから選んで、まとめて未登録にします (ほかの番号は動きません)")
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.delete_button)
+        buttons.addWidget(self.bulk_button)
         layout.addLayout(buttons)
         self.extra = layout  # 説明などを足す場所
 
@@ -184,6 +188,19 @@ class _PresetTab:
         self._set_value_text("")
         self._relabel()
 
+    def bulk_delete(self, what: str, note: str = "") -> int:
+        """選んだものをまとめて未登録にする。戻り値は消した数 (やめたら 0)。"""
+        self.list[:] = comfy.connections() if self._file == store.CONNECTIONS_FILE else comfy.workflows()
+        self._relabel()
+        items = [(i, self._label(p, i)) for i, p in enumerate(self.list) if not p.is_empty or p.name]
+        indexes = bulk_delete.ask(what, items, note, self.panel)
+        if not indexes:
+            return 0
+        self.list[:] = comfy.clear_presets(self._file, indexes)
+        self._relabel()
+        self._on_select(self.shown)  # 出している枠を消したときは欄も空にする
+        return len(indexes)
+
     def _relabel(self):
         self._relabeling = True
         for i, preset in enumerate(self.list):
@@ -227,6 +244,7 @@ class ComfySettingsDialog(QDialog):
 
         sets = comfy.sets()  # 「セット」のタブで並び替える
         self._sets = sets
+        self._folders = comfy.connection_folders()  # 接続先ごとのワークフローのフォルダ (ワークフローの台を見分ける)
 
         test = QPushButton("接続テスト")
         self.connection = _PresetTab(
@@ -245,14 +263,41 @@ class ComfySettingsDialog(QDialog):
             "名前 (一覧に出す名前。空ならファイル名を出します)",
             "ワークフロー (ComfyUI のメニュー「Export (API)」で保存した JSON)",
             QLineEdit(), browse,
-            lambda p, i: p.file_label(i), lambda s: s.strip().strip('"'), store.WORKFLOWS_FILE,
+            self._workflow_label, lambda s: s.strip().strip('"'), store.WORKFLOWS_FILE,
         )
+        # 接続先のワークフローのフォルダ (URL の欄の下)。ワークフローがどの台用かを、置いてあるフォルダで見分ける
+        self.folder_edit = QLineEdit()
+        self.folder_edit.setPlaceholderText("例: \\\\RAVEN\\SharBox\\comfyui-api\\kiwi (空なら台を決めない)")
+        folder_browse = QPushButton("参照...")
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(self.folder_edit, 1)
+        folder_row.addWidget(folder_browse)
+        conn_layout = self.connection.extra
+        pos = conn_layout.count() - 1  # 「プリセットを保存」などのボタンの前
+        conn_layout.insertWidget(pos, QLabel("ワークフローのフォルダ (この接続先用のワークフロー JSON を置くフォルダ)"))
+        conn_layout.insertLayout(pos + 1, folder_row)
+        conn_layout.insertSpacing(pos + 2, 6)
+        self.connection.extra.addWidget(_hint(
+            "ワークフローのフォルダを決めると、そのフォルダにあるワークフローはこの接続先の台用として扱います "
+            "(一覧に台の名前が付き、生成の画面でワークフローを選ぶと接続先も合わせます)。"
+            "どの接続先のフォルダにもないワークフローは共通 (どの台でも使う) です。「プリセットを保存」か OK で保存します。"
+        ))
+        folder_browse.clicked.connect(self._browse_folder)
+        self.connection.box.currentIndexChanged.connect(lambda _i: self._show_folder())
+
         pf = app.profile()
         self.workflow.extra.addWidget(_hint(pf.workflow_hint))
         self.workflow.extra.addWidget(_hint(
             "接続先・ワークフロー・ベースプロンプトは J-Rate・PromptWordCrafter・ImageMimicArt で共有しています "
             "(ほかのアプリで変えたものもここに出ます)。"
         ))
+        register = QPushButton("フォルダから登録...")
+        register.setToolTip("接続先ごとのワークフローのフォルダにある JSON のうち、まだ登録していないものをまとめて登録します")
+        register_row = QHBoxLayout()
+        register_row.addWidget(register)
+        register_row.addStretch(1)
+        self.workflow.extra.addLayout(register_row)
+        register.clicked.connect(self._register_from_folders)
 
         # ベースプロンプト: 動画用と画像用が 1 つずつ。OK で保存する
         base_panel = QWidget()
@@ -286,6 +331,11 @@ class ComfySettingsDialog(QDialog):
         set_down = _move_button("▼ 下へ", "選んでいるセットを 1 つ下の番号と入れ替えます (押し続けると続けて動きます)")
         set_up.clicked.connect(lambda: self._move_set(-1))
         set_down.clicked.connect(lambda: self._move_set(1))
+        set_bulk = QPushButton("まとめて削除...")
+        set_bulk.setToolTip("登録してあるセットから選んで、まとめて未登録にします (ほかの番号は動きません)")
+        set_bulk.clicked.connect(self._bulk_delete_sets)
+        set_buttons.addWidget(set_bulk)
+        set_buttons.addSpacing(24)
         set_buttons.addWidget(set_up)
         set_buttons.addWidget(set_down)
         set_layout.addLayout(set_buttons)
@@ -297,6 +347,12 @@ class ComfySettingsDialog(QDialog):
         self.tabs.addTab(set_panel, "セット")
 
         layout = QVBoxLayout(self)
+        offline = store.offline_message()
+        if offline:  # 別の PC と共有している置き場所に繋がらない (共有するものは保存できない)
+            warning = QLabel(offline)
+            warning.setWordWrap(True)
+            warning.setStyleSheet(f"color: {_c().error};")
+            layout.addWidget(warning)
         layout.addWidget(self.tabs, 1)
         # 出力フォルダ (出力フォルダを持つアプリだけ)
         self.output_edit: Optional[QLineEdit] = None
@@ -321,8 +377,14 @@ class ComfySettingsDialog(QDialog):
         bottom = QHBoxLayout()
         export_button = QPushButton("エクスポート...")
         import_button = QPushButton("インポート...")
+        location_button = QPushButton("共有の置き場所...")
+        location_button.setToolTip(
+            "接続先・ワークフロー・ベースプロンプト・エンハンサー・読み取りプリセット・LLM の接続を置くフォルダ。\n"
+            "ほかの PC と同じフォルダ (ネットワークの共有フォルダ) にすると、PC の間でも共有できます"
+        )
         bottom.addWidget(export_button)
         bottom.addWidget(import_button)
+        bottom.addWidget(location_button)
         bottom.addStretch(1)
         ok = QPushButton("OK")
         ok.setDefault(True)
@@ -333,15 +395,19 @@ class ComfySettingsDialog(QDialog):
 
         export_button.clicked.connect(self._export)
         import_button.clicked.connect(self._import)
+        location_button.clicked.connect(self._location)
         ok.clicked.connect(self._accept)
         cancel.clicked.connect(self.reject)
 
         self.connection.select(comfy.active_connection())
+        self._show_folder()
         self.workflow.select(comfy.active_workflow())
 
-        self.connection.save_button.clicked.connect(lambda: self._store(self.connection, "接続先"))
+        self.connection.save_button.clicked.connect(self._store_connection)
         self.workflow.save_button.clicked.connect(self._store_workflow)
-        self.connection.delete_button.clicked.connect(lambda: self._delete(self.connection, "接続先"))
+        self.connection.delete_button.clicked.connect(self._delete_connection)
+        self.connection.bulk_button.clicked.connect(self._bulk_delete_connections)
+        self.workflow.bulk_button.clicked.connect(self._bulk_delete_workflows)
         self.workflow.delete_button.clicked.connect(lambda: self._delete(self.workflow, "ワークフロー"))
         test.clicked.connect(lambda: self._test(test))
         browse.clicked.connect(self._browse)
@@ -354,6 +420,98 @@ class ComfySettingsDialog(QDialog):
         tab.store()
         state = "を未登録にしました" if tab.list[tab.shown].is_empty else "を保存しました"
         self._result(_c().ok, f"{what}のプリセット {tab.shown + 1} {state}")
+
+    # --- 接続先ごとのワークフローのフォルダ ---------------------------
+    def _workflow_label(self, preset, index: int) -> str:
+        """ワークフローの一覧の文字 (台の名前を付ける)。"""
+        text = preset.file_label(index)
+        if preset.is_empty:
+            return text
+        machine = comfy.machine_name(preset.value, self.connection.list, self._folders)
+        return text + comfy.machine_tag(preset.name or comfy.file_name(preset.value), machine)
+
+    def _show_folder(self):
+        index = self.connection.shown
+        url = self.connection.list[index].value if 0 <= index < len(self.connection.list) else ""
+        self.folder_edit.setText(self._folders.get(comfy._url_key(url), "") if url else "")
+
+    def _browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "この接続先用のワークフローを置くフォルダ", self.folder_edit.text().strip().strip('"'))
+        if folder:
+            self.folder_edit.setText(str(Path(folder)))
+
+    def _save_folder(self, old_url: str):
+        """接続先を保存したあと、そのワークフローのフォルダも書き、ワークフローの一覧の台の名前を付け直す。"""
+        url = self.connection.list[self.connection.shown].value
+        comfy.set_connection_folder(url, self.folder_edit.text(), old_url)
+        self._folders = comfy.connection_folders()
+        self.workflow._relabel()
+
+    def _store_connection(self):
+        old_url = self.connection.list[self.connection.shown].value
+        self._store(self.connection, "接続先")
+        self._save_folder(old_url)
+
+    def _delete_connection(self):
+        old_url = self.connection.list[self.connection.shown].value
+        self._delete(self.connection, "接続先")
+        if self.connection.list[self.connection.shown].is_empty:
+            self.folder_edit.clear()
+            self._save_folder(old_url)
+
+    def _bulk_delete_connections(self):
+        n = self.connection.bulk_delete(
+            "接続先", "接続先は 3 つのアプリで共有しています。消した接続先のワークフローのフォルダも消します。")
+        if n:
+            self._folders = comfy.connection_folders()
+            self._show_folder()
+            self.workflow._relabel()
+            self._result(_c().ok, f"接続先を {n} 件未登録にしました")
+
+    def _bulk_delete_workflows(self):
+        n = self.workflow.bulk_delete(
+            "ワークフロー", "ワークフローは 3 つのアプリで共有しています。JSON のファイルは消しません。")
+        if n:
+            self._result(_c().ok, f"ワークフローを {n} 件未登録にしました (JSON のファイルはそのままです)")
+
+    def _bulk_delete_sets(self):
+        self._sets[:] = comfy.sets()  # ほかで保存したものを消さないよう読み直す
+        for i, s in enumerate(self._sets):
+            self.set_list.item(i).setText(s.label(i))
+        items = [(i, s.label(i)) for i, s in enumerate(self._sets) if not s.is_empty]
+        indexes = bulk_delete.ask("セット", items, "セットはこのアプリだけのものです。", self)
+        if not indexes:
+            return
+        for i in indexes:
+            self._sets[i] = comfy.ComfySet()
+            self.set_list.item(i).setText(self._sets[i].label(i))
+        comfy.set_sets(self._sets)
+        self._result(_c().ok, f"セットを {len(indexes)} 件未登録にしました")
+
+    def _register_from_folders(self):
+        folders = []  # (台の名前, フォルダ)。同じフォルダは 1 回
+        for p in self.connection.list:
+            folder = self._folders.get(comfy._url_key(p.value), "") if not p.is_empty else ""
+            if folder and all(comfy._folder_key(folder) != comfy._folder_key(f) for _n, f in folders):
+                folders.append((p.name or comfy.file_name(folder.rstrip("\\/")), folder))
+        if not folders:
+            QMessageBox.information(
+                self, self.windowTitle(),
+                "接続先ごとのワークフローのフォルダが決まっていません。\n\n"
+                "「接続先」のタブで接続先を選び、「ワークフローのフォルダ」を入れて保存してください。")
+            return
+        dialog = RegisterWorkflowsDialog(folders, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.paths:
+            return
+        added, rest = comfy.register_workflows(dialog.paths)
+        self.workflow.list[:] = comfy.workflows()
+        self.workflow._relabel()
+        self.workflow.select(self.workflow.shown)
+        text = f"ワークフローを {added} 件登録しました (名前はファイル名です。あとで変えられます)"
+        if rest:
+            text += f"。枠が足りず {rest} 件は登録できませんでした"
+        self._result(_c().ok if not rest else _c().error, text)
 
     def _store_workflow(self):
         # JSON が空なら未登録に戻す。入っていれば確かめてから保存する
@@ -484,6 +642,14 @@ class ComfySettingsDialog(QDialog):
         self.imported = True
         self.reject()
 
+    def _location(self):
+        dialog = SharedLocationDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.changed:
+            return
+        # 共有の中身が変わったので、呼び出し側に開き直してもらう (インポートと同じ)
+        self.imported = True
+        self.reject()
+
     def _accept(self):
         """出している内容を保存して、選んでいる接続先とワークフローを使うものにする。"""
         if not self.connection.value:
@@ -506,13 +672,181 @@ class ComfySettingsDialog(QDialog):
                 self.output_edit.setFocus()
                 return
             comfy.set_output_folder(output)
+        old_url = self.connection.list[self.connection.shown].value
         self.connection.store()
+        self._save_folder(old_url)
         self.workflow.store()
         comfy.set_base_prompt_video(self.base_video.toPlainText())
         comfy.set_base_prompt_image(self.base_image.toPlainText())
         comfy.set_active_connection(self.connection.shown)
         comfy.set_active_workflow(self.workflow.shown)
         comfy.set_open_result(self.open_result.isChecked())
+        self.accept()
+
+
+class RegisterWorkflowsDialog(QDialog):
+    """接続先ごとのワークフローのフォルダにある、まだ登録していない JSON を選んで登録する。"""
+
+    def __init__(self, folders: list[tuple[str, str]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("フォルダからワークフローを登録")
+        self.resize(640, 560)
+        self.paths: list[str] = []
+        layout = QVBoxLayout(self)
+        free = sum(1 for p in comfy.workflows() if p.is_empty and not p.name)
+        intro = QLabel(
+            "登録するワークフローにチェックを付けてください。名前はファイル名 (拡張子なし) になります "
+            f"(あとで「ワークフロー」のタブで変えられます)。空いている枠: {free} 件")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.list = QListWidget()
+        layout.addWidget(self.list, 1)
+        bold = self.list.font()
+        bold.setBold(True)
+        found = 0
+        for machine, folder in folders:
+            head = QListWidgetItem(f"{machine}   {folder}")
+            head.setFont(bold)
+            head.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list.addItem(head)
+            paths = comfy.unregistered_workflows(folder)
+            if not paths:
+                none = QListWidgetItem("    (まだ登録していないものはありません。フォルダが見つからないときもこう出ます)")
+                none.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.list.addItem(none)
+            for path in paths:
+                item = QListWidgetItem(f"    {path.name}")
+                item.setData(Qt.ItemDataRole.UserRole, str(path))
+                item.setToolTip(str(path))
+                try:
+                    comfy.load_workflow(str(path))
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    found += 1
+                except comfy.ComfyError as exc:
+                    item.setText(f"    {path.name}   (使えません: {_one_line(str(exc), 60)})")
+                    item.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.list.addItem(item)
+        buttons = QHBoxLayout()
+        all_on = QPushButton("すべて選ぶ")
+        all_off = QPushButton("すべて外す")
+        buttons.addWidget(all_on)
+        buttons.addWidget(all_off)
+        buttons.addStretch(1)
+        self.ok = QPushButton("登録")
+        self.ok.setDefault(True)
+        cancel = QPushButton("キャンセル")
+        buttons.addWidget(self.ok)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+        all_on.clicked.connect(lambda: self._check_all(Qt.CheckState.Checked))
+        all_off.clicked.connect(lambda: self._check_all(Qt.CheckState.Unchecked))
+        self.ok.clicked.connect(self._accept)
+        cancel.clicked.connect(self.reject)
+        all_on.setEnabled(found > 0)
+        all_off.setEnabled(found > 0)
+
+    def _items(self):
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                yield item
+
+    def _check_all(self, state):
+        for item in self._items():
+            item.setCheckState(state)
+
+    def _accept(self):
+        self.paths = [item.data(Qt.ItemDataRole.UserRole) for item in self._items()
+                      if item.checkState() == Qt.CheckState.Checked]
+        self.accept()
+
+
+class SharedLocationDialog(QDialog):
+    """共有の置き場所 (この PC の設定)。別の PC と同じフォルダにすると、PC の間でも共有できる。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("共有の置き場所")
+        self.resize(620, 0)
+        self.changed = False
+        current = store.location()
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "接続先・ワークフロー・ベースプロンプト・エンハンサー・読み取りプリセット・LLM の接続を置くフォルダです。"
+            "J-Rate・PromptWordCrafter・ImageMimicArt はここを読み書きします。\n"
+            "ほかの PC でも同じフォルダ (ネットワークの共有フォルダ) にすると、PC の間でも同じ設定になります。"
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self.edit = QLineEdit(str(current) if current else "")
+        self.edit.setPlaceholderText(f"空ならこの PC だけ ({store.local_dir()})")
+        row.addWidget(self.edit, 1)
+        browse = QPushButton("参照...")
+        row.addWidget(browse)
+        layout.addLayout(row)
+        layout.addWidget(_hint(
+            "新しいフォルダにすると、この PC の今の設定のうち、そのフォルダにないものだけを足します "
+            "(フォルダにある接続先・ワークフローなどは消しません。ベースプロンプトと LLM の接続はフォルダにあるほうを使います)。"
+            "使用中・前回選んだもの、セット、生成の記録はアプリごと・PC ごとのままです。"
+            f"この PC の {store.local_dir()} には最後に読めた内容の写しを置き、フォルダに繋がらないときはそれを表示します "
+            "(繋がらない間は変更を保存しません)。"
+        ))
+        offline = store.offline_message()
+        if offline:
+            warning = QLabel(offline)
+            warning.setWordWrap(True)
+            warning.setStyleSheet(f"color: {_c().error};")
+            layout.addWidget(warning)
+
+        bottom = QHBoxLayout()
+        local = QPushButton("この PC だけにする")
+        local.setToolTip("フォルダの欄を空にします (OK で、今の内容をこの PC に写して、以後はこの PC だけで使います)")
+        bottom.addWidget(local)
+        bottom.addStretch(1)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        cancel = QPushButton("キャンセル")
+        bottom.addWidget(ok)
+        bottom.addWidget(cancel)
+        layout.addLayout(bottom)
+
+        browse.clicked.connect(self._browse)
+        local.clicked.connect(self.edit.clear)
+        ok.clicked.connect(self._accept)
+        cancel.clicked.connect(self.reject)
+
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(self, "共有の置き場所", self.edit.text().strip().strip('"'))
+        if folder:
+            self.edit.setText(str(Path(folder)))
+
+    def _accept(self):
+        folder = self.edit.text().strip().strip('"')
+        current = store.location()
+        if (not folder and current is None) or (folder and current is not None and store._same(Path(folder), current)):
+            self.accept()
+            return
+        if folder:
+            text = (f"共有の置き場所を次のフォルダにします。\n\n{folder}\n\n"
+                    "この PC の今の設定のうち、そのフォルダにないものを足します。"
+                    "この PC のほかのアプリ (J-Rate など) も、次に設定を読んだときからこのフォルダを使います。")
+        else:
+            text = (f"共有の置き場所をこの PC ({store.local_dir()}) に戻します。\n\n"
+                    "今の内容をこの PC に写し、以後はほかの PC と共有しません。")
+        if QMessageBox.question(self, self.windowTitle(), text) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            notes = store.set_location(folder)
+        except OSError as exc:
+            QMessageBox.warning(self, self.windowTitle(), f"このフォルダは使えません。\n\n{exc}")
+            return
+        self.changed = True
+        if notes:
+            QMessageBox.information(self, self.windowTitle(), "\n".join(notes))
         self.accept()
 
 
@@ -608,7 +942,9 @@ class GenerateDialog(QDialog):
             self.conn_box.setCurrentIndex(0)
         form.addRow("接続先", self.conn_box)
 
-        # ワークフロー
+        # ワークフロー (置いてあるフォルダで、どの台用かを見分けて名前の後ろに出す)
+        self._all_conns = comfy.connections()
+        self._folders = comfy.connection_folders()
         self._wf_index, self._wf_path, self._wf_name = [], [], []
         self.wf_box = QComboBox()
         self.wf_box.setMaxVisibleItems(20)
@@ -616,7 +952,8 @@ class GenerateDialog(QDialog):
         for i, p in enumerate(comfy.workflows()):
             if p.is_empty:
                 continue
-            self.wf_box.addItem(p.file_label(i))
+            machine = comfy.machine_name(p.value, self._all_conns, self._folders)
+            self.wf_box.addItem(p.file_label(i) + comfy.machine_tag(p.name or comfy.file_name(p.value), machine))
             self._wf_index.append(i)
             self._wf_path.append(p.value)
             self._wf_name.append(p.name or comfy.file_name(p.value))
@@ -629,6 +966,13 @@ class GenerateDialog(QDialog):
         # 元画像も送るか (読み取りのあるアプリで、ワークフローに LoadImage があるか)
         self.source_hint = _hint("")
         layout.addWidget(self.source_hint)
+        # ワークフローと接続先の台が違うとき
+        self.machine_hint = QLabel()
+        self.machine_hint.setWordWrap(True)
+        self.machine_hint.setStyleSheet(f"color: {_c().paused};")
+        self.machine_hint.setToolTip("ワークフローがどの台用かは、接続先ごとに決めたワークフローのフォルダで見分けています")
+        self.machine_hint.hide()
+        layout.addWidget(self.machine_hint)
 
         # 生成できない理由 (ワークフローを読めない、プロンプトを入れる場所がない、読み取りプリセットがない)
         self.error_label = QLabel()
@@ -788,6 +1132,10 @@ class GenerateDialog(QDialog):
         self.wf_box.currentIndexChanged.connect(self._apply_workflow)
         self.reread_check.toggled.connect(self._update_error)
         self.set_box.currentIndexChanged.connect(self._on_set)
+        # ワークフローを (人が) 選んだら、その台の接続先にする。セットや前回の値で選んだときは変えない
+        self.wf_box.activated.connect(self._match_connection)
+        self.wf_box.currentIndexChanged.connect(lambda _i: self._update_machine_hint())
+        self.conn_box.currentIndexChanged.connect(lambda _i: self._update_machine_hint())
         self.save_set.clicked.connect(self._save_set)
         self.delete_set.clicked.connect(self._delete_set)
 
@@ -799,6 +1147,7 @@ class GenerateDialog(QDialog):
             self._apply_reader(prefill.reader)
             self._apply_enhancer(prefill.enhancer)
         self._show_enhancer_hint()
+        self._update_machine_hint()
 
         if self.seconds_edit.isEnabled():
             self.seconds_edit.setFocus()
@@ -807,6 +1156,34 @@ class GenerateDialog(QDialog):
             self.ok_button.setFocus()
 
     # --- 欄の出し入れ -------------------------------------------------
+    # --- ワークフローの台と接続先 -----------------------------------------
+    def _match_connection(self, index: int):
+        """ワークフローがある台用なら、接続先をその台にする (今の接続先がその台ならそのまま)。"""
+        if not 0 <= index < len(self._wf_path):
+            return
+        machines = comfy.workflow_machines(self._wf_path[index], self._all_conns, self._folders)
+        urls = {comfy._url_key(c.value) for c in machines}
+        current = self.conn_box.currentIndex()
+        if not urls or (0 <= current < len(self._conn_url) and comfy._url_key(self._conn_url[current]) in urls):
+            return
+        for i, url in enumerate(self._conn_url):
+            if comfy._url_key(url) in urls:
+                self.conn_box.setCurrentIndex(i)
+                return
+
+    def machine_conflict(self, url: str, path: str) -> str:
+        return comfy.machine_conflict(url, path, self._all_conns, self._folders)
+
+    def _update_machine_hint(self):
+        wf, conn = self.wf_box.currentIndex(), self.conn_box.currentIndex()
+        machine = ""
+        if 0 <= wf < len(self._wf_path) and 0 <= conn < len(self._conn_url):
+            machine = self.machine_conflict(self._conn_url[conn], self._wf_path[wf])
+        self.machine_hint.setText(
+            f"⚠ このワークフローは {machine} 用です。接続先の台と違います"
+            if machine else "")
+        self.machine_hint.setVisible(bool(machine))
+
     def _apply(self, url: str, workflow: str, seconds: str):
         """接続先・ワークフローは一覧にあるものだけ選び直す。"""
         for i, u in enumerate(self._conn_url):

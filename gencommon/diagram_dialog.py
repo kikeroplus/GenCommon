@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
-from . import comfy, enhancer, reader, settings
+from . import comfy, enhancer, reader, set_cards, settings
 from .comfy_dialogs import GenerateDialog, _c, _hint, _one_line, _parse_seconds
 
 
@@ -145,12 +145,22 @@ class DiagramGenerateDialog(GenerateDialog):
         holder.setLayout(self.layout())
 
         root = QVBoxLayout(self)
+        # セット: 中身の概要が見えるカードを横に並べる (選んでいる番号は隠した set_box が持つ)
+        self._wf_kinds: dict = {}  # ワークフローが動画か画像か (カードを描き直すたびに読まないように)
+        self.set_strip = set_cards.SetStrip(len(self._sets), self.set_box.setCurrentIndex)
         set_row = QHBoxLayout()
-        set_row.addWidget(QLabel("セット"))
-        set_row.addWidget(self.set_box, 1)
-        set_row.addWidget(self.save_set)
-        set_row.addWidget(self.delete_set)
+        set_label = QLabel("セット")
+        set_label.setStyleSheet("font-weight: bold;")
+        set_row.addWidget(set_label, 0, Qt.AlignmentFlag.AlignTop)
+        set_row.addWidget(self.set_strip, 1)
+        set_buttons = QVBoxLayout()
+        set_buttons.addWidget(self.save_set)
+        set_buttons.addWidget(self.delete_set)
+        set_buttons.addStretch(1)
+        set_row.addLayout(set_buttons)
         root.addLayout(set_row)
+        self.set_box.currentIndexChanged.connect(lambda _n: self._refresh_sets())
+        self._refresh_sets()
         root.addWidget(self.error_label)
 
         # 行ごとに「設定 → 処理」を並べる。真ん中の列は幅を決めて、どの行でも同じ位置にそろえる
@@ -194,6 +204,7 @@ class DiagramGenerateDialog(GenerateDialog):
         box = self._group("ワークフロー (共有)")
         box.layout().addWidget(self.wf_box)
         box.layout().addWidget(self.source_hint)
+        box.layout().addWidget(self.machine_hint)
         row = QHBoxLayout()
         row.addWidget(QLabel("長さ"))
         row.addWidget(self.seconds_edit)
@@ -284,6 +295,20 @@ class DiagramGenerateDialog(GenerateDialog):
                 value.setParent(self)
                 value.hide()
         holder.deleteLater()
+
+    # --- セットのカード -------------------------------------------------
+    def _refresh_sets(self):
+        connections = list(zip(self._conn_name, self._conn_url))
+        workflows = list(zip(self._wf_name, self._wf_path))
+        infos = set_cards.describe_sets(self._sets, connections, workflows, self.profile.reads, self._wf_kinds,
+                                        self.machine_conflict)
+        self.set_strip.refresh(infos, self.set_box.currentIndex())
+
+    def _relabel_set(self, n: int):
+        """保存・削除のあと (中身が変わったので、そのカードを描き直す)。"""
+        super()._relabel_set(n)
+        self._wf_kinds.pop(self._sets[n].workflow.lower(), None)
+        self._refresh_sets()
 
     STEP_WIDTH = 250  # 真ん中の列の幅
     ARROW_WIDTH = 26

@@ -87,8 +87,11 @@ class Preset:
         return self._label(index, self.value)
 
     def file_label(self, index: int) -> str:
-        """ワークフロー用: パスの代わりにファイル名を出す。"""
-        return self._label(index, file_name(self.value))
+        """ワークフロー用: パスの代わりにファイル名を出す (名前がファイル名と同じなら出さない)。"""
+        name = file_name(self.value)
+        if self.name and self.name == Path(name).stem:
+            name = ""
+        return self._label(index, name)
 
     def clear(self):
         self.name = ""
@@ -310,6 +313,28 @@ def update_preset(file: str, index: int, preset: Optional[Preset]) -> list[Prese
     return items
 
 
+def clear_presets(file: str, indexes: list[int]) -> list[Preset]:
+    """共有の一覧 (接続先 / ワークフロー) の indexes の枠をまとめて未登録にする (ほかの枠は動かさない)。
+
+    読み直してから書く。接続先なら、そのワークフローのフォルダも消す。戻り値は書いたあとの一覧。
+    """
+    items = connections() if file == store.CONNECTIONS_FILE else workflows()
+    urls = []
+    for i in indexes:
+        if 0 <= i < len(items):
+            urls.append(items[i].value)
+            items[i] = Preset()
+    _save_presets(file, items, len(items))
+    if file == store.CONNECTIONS_FILE:
+        folders = connection_folders()
+        remaining = {_url_key(p.value) for p in items if not p.is_empty}
+        for url in urls:
+            if _url_key(url) not in remaining:  # 同じ URL がほかの枠に残っていれば、フォルダは残す
+                folders.pop(_url_key(url), None)
+        save(store.CONNECTION_FOLDERS_FILE, "".join(f"{u}\t{f}\r\n" for u, f in folders.items()))
+    return items
+
+
 def swap_presets(file: str, a: int, b: int) -> list[Preset]:
     """共有の一覧の a 番と b 番を入れ替え、すべてのアプリの使用中の番号も合わせる。"""
     items = connections() if file == store.CONNECTIONS_FILE else workflows()
@@ -349,6 +374,110 @@ def active_workflow() -> int:
 
 def set_active_workflow(index: int) -> None:
     save("comfy_workflow_preset.txt", str(index + 1))
+
+
+# ----------------------------------------------------------------------
+# 接続先ごとのワークフローのフォルダ (共有。comfy_connection_folders.txt に「URL Tab フォルダ」)
+# ワークフローがどの台用かは、置いてあるフォルダで見分ける。どの接続先のフォルダにもないものは「共通」
+# ----------------------------------------------------------------------
+def _url_key(url: str) -> str:
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _folder_key(path: str) -> str:
+    text = (path or "").strip().strip('"')
+    return os.path.normcase(os.path.normpath(text)) if text else ""
+
+
+def connection_folders() -> dict[str, str]:
+    """{接続先の URL (小文字): ワークフローのフォルダ}。"""
+    folders: dict[str, str] = {}
+    for line in (load(store.CONNECTION_FOLDERS_FILE) or "").splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            folders[_url_key(parts[0])] = parts[1].strip()
+    return folders
+
+
+def set_connection_folder(url: str, folder: str, old_url: str = "") -> None:
+    """接続先のワークフローのフォルダを書く (空なら消す)。old_url は URL を書き換えたときの前の URL。
+
+    ほかのアプリが同時に変えていても消さないよう、読み直してからその行だけを変える。
+    """
+    folders = connection_folders()
+    if old_url and _url_key(old_url) != _url_key(url):
+        folders.pop(_url_key(old_url), None)
+    key = _url_key(url)
+    folder = _one_line(folder).strip('"')
+    if key and folder:
+        folders[key] = folder
+    elif key:
+        folders.pop(key, None)
+    save(store.CONNECTION_FOLDERS_FILE, "".join(f"{u}\t{f}\r\n" for u, f in folders.items()))
+
+
+def _in_folder(path: str, folder: str) -> bool:
+    p, f = _folder_key(path), _folder_key(folder)
+    return bool(p and f) and p.startswith(f.rstrip("\\/") + os.sep)
+
+
+def workflow_machines(path: str, conns: Optional[list[Preset]] = None,
+                      folders: Optional[dict[str, str]] = None) -> list[Preset]:
+    """ワークフローを置いてあるフォルダが、ワークフローのフォルダになっている接続先 (共通のものは空)。"""
+    conns = connections() if conns is None else conns
+    folders = connection_folders() if folders is None else folders
+    return [c for c in conns if not c.is_empty and _in_folder(path, folders.get(_url_key(c.value), ""))]
+
+
+def machine_name(path: str, conns: Optional[list[Preset]] = None,
+                 folders: Optional[dict[str, str]] = None) -> str:
+    """ワークフローの台の名前 (接続先の名前。名前がなければフォルダ名。共通なら空)。"""
+    folders = connection_folders() if folders is None else folders
+    names = []
+    for c in workflow_machines(path, conns, folders):
+        name = c.name or file_name(folders.get(_url_key(c.value), "").rstrip("\\/"))
+        if name and name not in names:
+            names.append(name)
+    return " / ".join(names)
+
+
+def machine_tag(name: str, machine: str) -> str:
+    """一覧に出す名前の後ろに付ける台の名前 (名前にもう入っていれば付けない)。"""
+    if not machine or machine.strip("[]［］").lower() in name.lower():
+        return ""
+    return f"  ［{machine.strip('[]［］')}］"
+
+
+def machine_conflict(url: str, path: str, conns: Optional[list[Preset]] = None,
+                     folders: Optional[dict[str, str]] = None) -> str:
+    """ワークフローが別の台用なら、その台の名前 (合っている・共通なら空)。"""
+    machines = workflow_machines(path, conns, folders)
+    if not machines or any(_url_key(c.value) == _url_key(url) for c in machines):
+        return ""
+    return machine_name(path, conns, folders)
+
+
+def unregistered_workflows(folder: str) -> list[Path]:
+    """フォルダにある .json のうち、まだワークフローに登録していないもの (名前順)。読めなければ空。"""
+    registered = {_folder_key(p.value) for p in workflows() if not p.is_empty}
+    try:
+        found = sorted((p for p in Path(folder).glob("*.json") if p.is_file()), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+    return [p for p in found if _folder_key(str(p)) not in registered]
+
+
+def register_workflows(paths: list[str]) -> tuple[int, int]:
+    """空いている枠に、ファイル名 (拡張子なし) を名前にして登録する。戻り値は (登録した数, 枠が足りず登録できなかった数)。"""
+    items = workflows()
+    added = 0
+    for path in paths:
+        slot = next((i for i, p in enumerate(items) if p.is_empty and not p.name), -1)
+        if slot < 0:
+            break
+        items = update_preset(store.WORKFLOWS_FILE, slot, Preset(Path(path).stem.strip(), path))
+        added += 1
+    return added, len(paths) - added
 
 
 def active_workflow_path() -> str:
@@ -498,7 +627,7 @@ def _is_setting_file(name: str) -> bool:
 def _setting_files() -> list[Path]:
     """今の設定のファイル (共有のものと、このアプリのもの)。"""
     found = []
-    for folder, shared in ((store.SHARED_DIR, True), (store.APP_DIR, False)):
+    for folder, shared in ((store.shared_dir(), True), (store.APP_DIR, False)):
         if not folder.is_dir():
             continue
         for p in folder.iterdir():
@@ -548,6 +677,8 @@ def import_settings(path: str) -> str:
     files = root.get("files") if isinstance(root, dict) else None
     if not isinstance(files, dict) or _str(root, "kind") != EXPORT_KIND:
         raise ComfyError("生成の設定をエクスポートしたファイルではありません。")
+    if not store.online():
+        raise ComfyError(store.offline_message())
 
     try:
         export_settings(str(import_backup_path()))

@@ -222,6 +222,12 @@ class PresetEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QLabel(caption))
+        offline = store.offline_message()
+        if offline:  # 別の PC と共有している置き場所に繋がらない (保存できない)
+            warning = QLabel(offline)
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #e05050;")
+            layout.addWidget(warning)
         self.box = QComboBox()
         self.box.setMaxVisibleItems(20)
         for i, preset in enumerate(presets):
@@ -258,10 +264,14 @@ class PresetEditor(QWidget):
         buttons.addSpacing(24)
         save_button = QPushButton("プリセットを保存")
         delete_button = QPushButton("削除")
+        bulk_button = QPushButton("まとめて削除...")
+        bulk_button.setToolTip("登録してあるプリセットから選んで、まとめて未登録にします (ほかの番号は動きません)")
         save_button.clicked.connect(self.store)
         delete_button.clicked.connect(self.delete)
+        bulk_button.clicked.connect(self.bulk_delete)
         buttons.addWidget(save_button)
         buttons.addWidget(delete_button)
+        buttons.addWidget(bulk_button)
         layout.addLayout(buttons)
 
         self.box.currentIndexChanged.connect(self._on_select)
@@ -313,6 +323,22 @@ class PresetEditor(QWidget):
     def delete(self):
         self._reload()
         self.presets[self.shown] = LlmPreset(template=self.default_template)
+        self._show(self.presets[self.shown])
+        self._saved()
+
+    def bulk_delete(self):
+        from . import bulk_delete  # 画面の部品 (読み込みの順を気にしなくてよいように、使うときに読む)
+
+        self._reload()
+        self._relabel_all()
+        items = [(i, p.label(i)) for i, p in enumerate(self.presets) if not p.is_empty]
+        indexes = bulk_delete.ask(
+            "プリセット", items, "プリセットは 3 つのアプリで共有しています。", self)
+        if not indexes:
+            return
+        self._reload()
+        for i in indexes:
+            self.presets[i] = LlmPreset(template=self.default_template)
         self._show(self.presets[self.shown])
         self._saved()
 
