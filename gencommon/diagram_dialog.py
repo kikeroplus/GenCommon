@@ -201,13 +201,19 @@ class DiagramGenerateDialog(GenerateDialog):
         steps.append(("insert", "差し込みを付ける", True, self.insert_group))
 
         box = self._group("ベースプロンプト (共有)")
-        box.layout().addWidget(self.base_check)
-        self._no_base = _hint("ベースプロンプトは未設定です (「生成の設定...」で設定します)")
+        row = QHBoxLayout()
+        row.addWidget(self.base_check, 1)
+        row.addWidget(self._tab_button("ベースプロンプト", "ベースプロンプトの文 (画像用・動画用) を書きます"))
+        box.layout().addLayout(row)
+        self._no_base = _hint("ベースプロンプトは未設定です (右の「設定...」で書きます)")
         box.layout().addWidget(self._no_base)
         steps.append(("base", "ベースプロンプトを付ける", True, box))
 
         box = self._group("ワークフロー (共有)")
-        box.layout().addWidget(self.wf_box)
+        row = QHBoxLayout()
+        row.addWidget(self.wf_box, 1)
+        row.addWidget(self._tab_button("ワークフロー", "ワークフローの登録・並び替え"))
+        box.layout().addLayout(row)
         box.layout().addWidget(self.source_hint)
         box.layout().addWidget(self.machine_hint)
         row = QHBoxLayout()
@@ -219,7 +225,10 @@ class DiagramGenerateDialog(GenerateDialog):
         steps.append(("workflow", "ワークフローに入れる", False, box))
 
         box = self._group("接続先 (共有)")
-        box.layout().addWidget(self.conn_box)
+        row = QHBoxLayout()
+        row.addWidget(self.conn_box, 1)
+        row.addWidget(self._tab_button("接続先", "接続先 (ComfyUI の URL) の登録・接続テスト"))
+        box.layout().addLayout(row)
         if not self.settings_only:  # 回数は生成のたびに決めるもの (覚えない)
             row = QHBoxLayout()
             row.addWidget(QLabel("回数"))
@@ -338,6 +347,14 @@ class DiagramGenerateDialog(GenerateDialog):
             holder.setFixedWidth(width)
             row.addWidget(holder, 0, Qt.AlignmentFlag.AlignVCenter)
         return row
+
+    def _tab_button(self, tab: str, what: str) -> QPushButton:
+        """欄の横の「設定...」: 「生成の設定」をその欄のタブで開く (入力していた内容で、この画面に戻る)。"""
+        button = QPushButton("設定...")
+        button.setToolTip(f"「生成の設定」の「{tab}」タブを開きます: {what}")
+        button.setAutoDefault(False)
+        button.clicked.connect(lambda: self._open_settings(tab))
+        return button
 
     @staticmethod
     def _group(title: str) -> QGroupBox:

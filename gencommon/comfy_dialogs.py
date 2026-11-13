@@ -239,7 +239,10 @@ class _Worker(QObject):
 
 
 class ComfySettingsDialog(QDialog):
-    def __init__(self, parent=None):
+    # 開くときに選んでおけるタブ (図の画面の各欄の「設定...」から、その欄のタブで開く)
+    TABS = ("接続先", "ワークフロー", "ベースプロンプト", "セット")
+
+    def __init__(self, parent=None, tab: str = ""):
         super().__init__(parent)
         self.setWindowTitle("生成の設定 (ComfyUI)")
         self.resize(660, 600)
@@ -349,6 +352,8 @@ class ComfySettingsDialog(QDialog):
         self.tabs.addTab(self.workflow.panel, "ワークフロー")
         self.tabs.addTab(base_panel, "ベースプロンプト")
         self.tabs.addTab(set_panel, "セット")
+        if tab in self.TABS:
+            self.tabs.setCurrentIndex(self.TABS.index(tab))
 
         layout = QVBoxLayout(self)
         offline = store.offline_message()
@@ -1015,6 +1020,7 @@ class GenerateDialog(QDialog):
         self.reread = False  # 読み取り済みのものも読み直す
         self.enhancer_preset: Optional[enhancer.LlmPreset] = None  # AI で盛ってから送るときのエンハンサー
         self.reopen: Optional[comfy.GenRequest] = None  # 「生成の設定...」を押して閉じたときの各欄の内容
+        self.settings_tab = ""  # 「生成の設定」をどのタブで開くか (図の画面の各欄の「設定...」から)
         self.switch_view = False  # 「図で開く」/「いつもの画面で開く」を押して閉じた
         self.carry: dict = {}  # 画面を切り替えるときに持っていく、reopen にない欄 (回数・セット・読み直す)
         self._wf_data: Optional[dict] = None  # 選んでいるワークフロー (読めないときは None)
@@ -1635,7 +1641,8 @@ class GenerateDialog(QDialog):
         self._relabel_set(n)
 
     # --- ボタン -------------------------------------------------------
-    def _open_settings(self):
+    def _open_settings(self, tab: str = ""):
+        self.settings_tab = tab if isinstance(tab, str) else ""  # clicked から呼ぶと bool が来る
         self.reopen = self._fields()
         comfy.set_use_base_prompt(self.base_check.isChecked())  # 開き直したときも同じ状態に
         self.reject()
@@ -1743,11 +1750,32 @@ def _parse_seconds(text: str) -> Optional[float]:
 # ----------------------------------------------------------------------
 # 生成ジョブの一覧 (閉じてもジョブは続く)
 # ----------------------------------------------------------------------
+def _clock(stamp: Optional[float]) -> str:
+    """時刻 (time.time) を短く。今日なら時:分:秒、ほかの日なら月/日も付ける。"""
+    if not stamp:
+        return ""
+    from datetime import datetime
+    when = datetime.fromtimestamp(stamp)
+    if when.date() == datetime.now().date():
+        return when.strftime("%H:%M:%S")
+    return f"{when.month}/{when.day} " + when.strftime("%H:%M:%S")
+
+
+def _job_times(job) -> str:
+    """生成時刻の欄のヒント: 登録・開始・終了の時刻。"""
+    lines = [f"登録: {_clock(job.queued_at)}"]
+    if job.started_at:
+        lines.append(f"生成開始: {_clock(job.started_at)}")
+    if job.finished_at:
+        lines.append(f"終了: {_clock(job.finished_at)}")
+    return "\n".join(lines)
+
+
 class JobWindow(QWidget):
     def __init__(self, manager, cancel: Callable, show: Callable, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         pf = app.profile()
-        self.COLUMNS = (pf.column, "ワークフロー", "状態", "時間", "内容")
+        self.COLUMNS = (pf.column, "ワークフロー", "状態", "生成時刻", "時間", "内容")
         self.setWindowTitle(f"生成ジョブ - {pf.name}")
         self.resize(840, 420)
         self.manager = manager
@@ -1765,9 +1793,9 @@ class JobWindow(QWidget):
         self.tree.setHeaderLabels(self.COLUMNS)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         header = self.tree.header()
-        for column, width in enumerate((190, 140, 70, 60)):
+        for column, width in enumerate((190, 140, 70, 70, 60)):
             header.resizeSection(column, width)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.tree, 1)
 
         buttons = QHBoxLayout()
@@ -1823,9 +1851,11 @@ class JobWindow(QWidget):
             item.setText(1, job.request.workflow_name)
             paused = self.manager.paused and job.is_active and not job.is_running
             item.setText(2, "一時停止" if paused else job.state_text)
-            item.setText(3, "" if job.run_time is None else comfy.format_elapsed(job.run_time))
-            item.setText(4, job.status)
-            item.setToolTip(4, job.status)
+            item.setText(3, _clock(job.finished_at))  # 生成が終わった時刻
+            item.setToolTip(3, _job_times(job))
+            item.setText(4, "" if job.run_time is None else comfy.format_elapsed(job.run_time))
+            item.setText(5, job.status)
+            item.setToolTip(5, job.status)
             # 実行中の行は色を付けて太字に
             was_running = bool(item.data(1, Qt.ItemDataRole.UserRole))
             if job.is_running != was_running:

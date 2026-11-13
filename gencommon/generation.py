@@ -54,6 +54,9 @@ class GenJob:
         self.prompt_id = ""  # ComfyUI が受け付けた番号 (続きから始めるときに使う)
         self.held = False  # 一時停止中に待機へ戻したもの (再開するまで実行に移さない)
         self.started = 0.0  # 実行に移った時刻 (time.monotonic)
+        self.queued_at = time.time()  # 登録した時刻 (ジョブ一覧に出す)
+        self.started_at: Optional[float] = None  # 生成を始めた時刻 (time.time。ジョブ一覧の「生成時刻」のヒント)
+        self.finished_at: Optional[float] = None  # 終わった時刻 (完了・失敗・キャンセル。ジョブ一覧の「生成時刻」)
         self.run_time: Optional[float] = None  # 生成にかかった秒数 (完了したときに決まる)
         self.reading = False  # 読み取っている最中 (同じ元画像のほかのジョブを待たせる)
 
@@ -340,7 +343,7 @@ class GenerationController(QObject):
             # 「生成の設定...」が押された: 設定を出してから、入力していた内容で開き直す。
             # 設定を OK で閉じたときは、そこで選んだ接続先とワークフローを使う
             prefill = dialog.reopen
-            if self.show_settings():
+            if self.show_settings(dialog.settings_tab):
                 prefill.url = ""
                 prefill.workflow_path = ""
         request = dialog.request
@@ -412,6 +415,8 @@ class GenerationController(QObject):
         job.held = False
         job.reading = job.need_read
         job.started = time.monotonic()
+        job.started_at = time.time()
+        job.finished_at = None
         job.set_status("準備中...")
         self._show_job_status(job)
         signals = self._signals
@@ -534,10 +539,12 @@ class GenerationController(QObject):
         failed = False
         message = ""
         job.reading = False
+        job.finished_at = time.time()
         if isinstance(error, comfy.GenerationHeld) and not job.cancel.is_set():
             # 一時停止中に ComfyUI 側から消えた・つながらなくなった: 待機に戻して再開を待つ
             job.state = WAITING
             job.held = True
+            job.started_at = job.finished_at = None  # 待機に戻したので、時刻は次に始めた・終わったときに決まる
             if not error.sent:
                 job.prompt_id = ""
             job.set_status("一時停止のため待機に戻しました")
@@ -584,6 +591,7 @@ class GenerationController(QObject):
         """待機中ならその場で取り消し、実行中なら ComfyUI 側の実行も止める。"""
         if job.state == WAITING:
             job.state = CANCELED
+            job.finished_at = time.time()
             job.set_status("キャンセルしました")
             self._changed()
         elif job.state == RUNNING and not job.cancel.is_set():
@@ -650,10 +658,11 @@ class GenerationController(QObject):
             return
         self._open_file(path)
 
-    def show_settings(self) -> bool:
+    def show_settings(self, tab: str = "") -> bool:
+        """tab: 開いたときに選んでおくタブ (ComfySettingsDialog.TABS の名前)。"""
         # インポートしたあとは、読み込んだ内容で開き直す
         while True:
-            dialog = ComfySettingsDialog(self.window)
+            dialog = ComfySettingsDialog(self.window, tab)
             ok = dialog.exec() == QDialog.DialogCode.Accepted
             if not dialog.imported:
                 return ok
@@ -677,7 +686,7 @@ class GenerationController(QObject):
                 return
             # 「生成の設定...」が押された: 設定を出してから、入力していた内容で開き直す
             prefill = dialog.reopen
-            if self.show_settings():
+            if self.show_settings(dialog.settings_tab):
                 prefill.url = ""
                 prefill.workflow_path = ""
 
