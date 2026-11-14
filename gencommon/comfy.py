@@ -1372,7 +1372,8 @@ def generate(
         prompt_id = submit()
         delay = 2
 
-    started = time.monotonic()
+    started = time.monotonic()  # 依頼した時刻 (順番待ちの時間はここから)
+    run_started = None  # 「生成中」になった時刻 (生成中の時間はここから数え直す)
     failures = 0
     while True:
         if cancel.wait(delay):
@@ -1393,8 +1394,16 @@ def generate(
                     raise GenerationHeld(sent=False)
                 prompt_id = submit()
                 started = time.monotonic()
+                run_started = None
                 continue
-            progress(f"{state} {_elapsed(started)}")
+            if state == "生成中":
+                # 順番待ちの時間は含めない (あと何分で終わるかの目安にするため)
+                if run_started is None:
+                    run_started = time.monotonic()
+                progress(f"{state} {_elapsed(run_started)}")
+            else:
+                run_started = None
+                progress(f"{state} {_elapsed(started)}")
         except ComfyConnectionError:
             # ComfyUI が落ちた・再起動中など。1 分ほど続いたらあきらめる
             failures += 1
@@ -1402,7 +1411,7 @@ def generate(
                 if held is not None and held():
                     raise GenerationHeld(sent=True)  # 再開したときに、まだ残っていれば受け取る
                 raise ComfyError(f"ComfyUI との接続が切れました。({base_url})")
-            progress(f"ComfyUI の応答待ち... {_elapsed(started)}")
+            progress(f"ComfyUI の応答待ち... {_elapsed(started if run_started is None else run_started)}")
 
     _check_status(entry)
     run_time = _run_seconds(entry)
