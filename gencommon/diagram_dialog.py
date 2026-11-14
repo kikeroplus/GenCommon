@@ -151,7 +151,7 @@ class DiagramGenerateDialog(GenerateDialog):
 
         root = QVBoxLayout(self)
         # セット: 中身の概要が見えるカードを横に並べる (選んでいる番号は隠した set_box が持つ)
-        self._wf_kinds: dict = {}  # ワークフローが動画か画像か (カードを描き直すたびに読まないように)
+        self._wf_kinds: dict = {}  # ワークフローの種類 T2I など (カードを描き直すたびに読まないように)
         self.set_strip = set_cards.SetStrip(len(self._sets), self.set_box.setCurrentIndex)
         set_row = QHBoxLayout()
         set_label = QLabel("セット")

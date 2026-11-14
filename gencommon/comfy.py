@@ -1007,6 +1007,24 @@ def is_video_workflow(wf: dict) -> bool:
     return False
 
 
+def workflow_kind(wf: dict) -> str:
+    """ワークフローの種類: "T2I" / "I2I" / "T2V" / "I2V"。
+    実際に使われる LoadImage があれば画像から (I2○)、動画用なら ○2V。
+    ControlNet で構図・ポーズを写すものも、元の写真を入れるので I2I とする。"""
+    source = bool(_load_image_nodes(wf))
+    return ("I" if source else "T") + "2" + ("V" if is_video_workflow(wf) else "I")
+
+
+def uses_controlnet(wf: dict) -> bool:
+    """実際に使われるノードに ControlNet (構図・ポーズを写す) があるか。
+    名前に controlnet を含むか、control と apply を両方含む (Krea2ControlApply など) ノードで見分ける。"""
+    for nid in _used_node_ids(wf):
+        ct = _class_type(wf[nid]).lower()
+        if "controlnet" in ct or ("control" in ct and "apply" in ct):
+            return True
+    return False
+
+
 PROMPT_TITLES = ("positive", "user prompt")  # 文字列ノードのタイトルにこれがあれば本文を入れる
 
 
