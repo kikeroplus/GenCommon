@@ -41,6 +41,9 @@ def _on_ui(func: Callable[[], None]) -> None:
     _bridge.call.emit(func)
 
 OPTIONAL_LINE = "#b7851f"  # 選んだときだけ通る段の枠 (明るい・暗い配色どちらでも見える)
+# 左の設定の枠を、送る先で色分けする (LM Studio のアイコンの薄紫・ComfyUI のアイコンの黄色)
+LLM_LINE = "#a9a2ed"
+COMFY_LINE = "#d8c800"
 
 
 class _StepBox(QFrame):
@@ -170,10 +173,11 @@ class DiagramGenerateDialog(GenerateDialog):
         rows = QVBoxLayout()
         rows.setSpacing(4)
         rows.addLayout(self._row(self._head("ユーザーが設定する"), None, self._head("処理 (上から順に)"), None))
+        rows.addLayout(self._row(self._legend(), None, None, None))
 
         steps = []
         if pf.reads:
-            box = self._group("元画像と読み取り (読み取りプリセットは共有)")
+            box = self._group("元画像と読み取り (読み取りプリセットは共有)", LLM_LINE)
             box.layout().addWidget(self.prompt_label)
             box.layout().addWidget(self.prompt_view)
             row = QHBoxLayout()
@@ -189,7 +193,7 @@ class DiagramGenerateDialog(GenerateDialog):
             box.layout().addWidget(self.prompt_view)
             steps.append(("source", pf.prompt_word, False, box))
 
-        box = self._group("エンハンサー (共有)")
+        box = self._group("エンハンサー (共有)", LLM_LINE)
         row = QHBoxLayout()
         row.addWidget(self.enhancer_box, 1)
         row.addWidget(self.enhancer_settings_button)
@@ -200,7 +204,7 @@ class DiagramGenerateDialog(GenerateDialog):
         self.insert_group.setTitle("差し込み (1 件ごとに、フォルダの次のテキストを足す)")
         steps.append(("insert", "差し込みを付ける", True, self.insert_group))
 
-        box = self._group("ベースプロンプト (共有)")
+        box = self._group("ベースプロンプト (共有)", COMFY_LINE)
         row = QHBoxLayout()
         row.addWidget(self.base_check, 1)
         row.addWidget(self._tab_button("ベースプロンプト", "ベースプロンプトの文 (画像用・動画用) を書きます"))
@@ -209,7 +213,7 @@ class DiagramGenerateDialog(GenerateDialog):
         box.layout().addWidget(self._no_base)
         steps.append(("base", "ベースプロンプトを付ける", True, box))
 
-        box = self._group("ワークフロー (共有)")
+        box = self._group("ワークフロー (共有)", COMFY_LINE)
         row = QHBoxLayout()
         row.addWidget(self.wf_box, 1)
         row.addWidget(self._tab_button("ワークフロー", "ワークフローの登録・並び替え"))
@@ -224,7 +228,7 @@ class DiagramGenerateDialog(GenerateDialog):
         box.layout().addLayout(row)
         steps.append(("workflow", "ワークフローに入れる", False, box))
 
-        box = self._group("接続先 (共有)")
+        box = self._group("接続先 (共有)", COMFY_LINE)
         row = QHBoxLayout()
         row.addWidget(self.conn_box, 1)
         row.addWidget(self._tab_button("接続先", "接続先 (ComfyUI の URL) の登録・接続テスト"))
@@ -357,11 +361,27 @@ class DiagramGenerateDialog(GenerateDialog):
         return button
 
     @staticmethod
-    def _group(title: str) -> QGroupBox:
+    def _group(title: str, line: Optional[str] = None) -> QGroupBox:
+        """左の設定の枠。line を渡すと、その色で縁取る (送る先の色分け)。"""
         box = QGroupBox(title)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(8, 6, 8, 6)
+        if line:
+            box.setObjectName("sendto")  # 中の欄には色を付けない
+            box.setStyleSheet(
+                f"#sendto {{ border: 2px solid {line}; border-radius: 6px; margin-top: 0.6em; padding-top: 0.2em; }}"
+                "#sendto::title { subcontrol-origin: margin; subcontrol-position: top left; left: 8px; padding: 0 3px; }")
         return box
+
+    @staticmethod
+    def _legend() -> QLabel:
+        """枠の色の見方。"""
+        def chip(color: str) -> str:
+            return f'<span style="color: {color}; font-size: 13pt;">■</span>'
+        label = QLabel(f"{chip(LLM_LINE)} LLM に送る　{chip(COMFY_LINE)} ComfyUI に送る")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(f"color: {_c().hint};")
+        return label
 
     # --- 「図で設定」: 生成せずに前回の値として保存 ------------------------
     def _update_error(self):
