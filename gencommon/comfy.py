@@ -11,6 +11,7 @@ J-Rate の ComfyVideo.cs と同じ決まりごと (generation-standard.md) で�
 """
 
 import json
+import re
 import os
 import random
 import threading
@@ -165,6 +166,9 @@ class GenRequest:
     # 差し込み (inserts.py)。ジョブ・記録では使った枠ごとの {slot, name, folder, before, file, text}。
     # 生成の画面の入力中の内容 (_fields) では欄の形 {slot, name, folder, before, use}。None = 持たない
     inserts: Optional[list] = None
+    # リファレンス画像 (主に顔)。タイトルでリファレンス用と分かる LoadImage に入れる (reference_nodes)。
+    # None なら、リファレンス用の LoadImage にも元画像を入れる (今までどおり)
+    reference: Optional[str] = None
 
     @property
     def reader_name(self) -> str:
@@ -807,6 +811,8 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
     if req.inserts:
         # prompt には混ぜない (「旧」の判定に使うので)。使った枠ごとの名前・フォルダ・ファイル・中身
         record["inserts"] = req.inserts
+    if req.reference:
+        record["reference"] = req.reference  # リファレンス画像 (主に顔)
     try:
         with _history_lock:
             store.APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -1257,6 +1263,28 @@ def _load_image_nodes(wf: dict) -> list[dict]:
     return [wf[nid] for nid in used if _class_type(wf[nid]) == "LoadImage" and "image" in wf[nid]["inputs"]]
 
 
+# リファレンス用の LoadImage: タイトル (_meta.title) にこの言葉を含むもの。英語は単語として (Refine などを拾わない)
+REFERENCE_WORDS = ("reference", "ref", "face")
+REFERENCE_WORDS_JA = ("参照", "リファレンス", "顔")
+
+
+def is_reference_node(node: dict) -> bool:
+    """リファレンス画像 (主に顔) を入れる LoadImage か (タイトルで見分ける)。"""
+    title = _title(node).lower()
+    if any(w in title for w in REFERENCE_WORDS_JA):
+        return True
+    return any(re.search(rf"(?<![a-z]){w}(?![a-z])", title) for w in REFERENCE_WORDS)
+
+
+def reference_nodes(wf: dict) -> list[dict]:
+    """リファレンス画像を入れる場所: 実際に使われる LoadImage のうち、タイトルがリファレンス用のもの。"""
+    return [n for n in _load_image_nodes(wf) if is_reference_node(n)]
+
+
+def has_reference(wf: dict) -> bool:
+    return bool(reference_nodes(wf))
+
+
 def uses_source_image(wf: dict) -> bool:
     """ワークフローに LoadImage があり、元画像も送るか (元画像のあるアプリだけ)。"""
     return app.profile().reads and bool(_load_image_nodes(wf))
@@ -1375,10 +1403,19 @@ def generate(
         if load_nodes:
             if cancel.is_set():
                 raise GenerationCancelled()
-            progress("元画像を ComfyUI に送っています...")
-            uploaded = _upload_image(base_url, source)
-            for node in load_nodes:
-                node["inputs"]["image"] = uploaded
+            # リファレンスを渡されたときだけ、リファレンス用の LoadImage に分けて入れる (なければ今までどおり全部に元画像)
+            ref_nodes = [n for n in load_nodes if is_reference_node(n)] if req.reference else []
+            src_nodes = [n for n in load_nodes if not any(n is r for r in ref_nodes)]
+            if src_nodes:
+                progress("元画像を ComfyUI に送っています...")
+                uploaded = _upload_image(base_url, source)
+                for node in src_nodes:
+                    node["inputs"]["image"] = uploaded
+            if ref_nodes:
+                progress("リファレンス画像を ComfyUI に送っています...")
+                uploaded_ref = _upload_image(base_url, req.reference)
+                for node in ref_nodes:
+                    node["inputs"]["image"] = uploaded_ref
         prompt = req.full_prompt
         if prompt is not None:
             marked = bool(_marker_slots(wf))
