@@ -169,6 +169,9 @@ class GenRequest:
     # リファレンス画像 (主に顔)。タイトルでリファレンス用と分かる LoadImage に入れる (reference_nodes)。
     # None なら、リファレンス用の LoadImage にも元画像を入れる (今までどおり)
     reference: Optional[str] = None
+    # ラストフレーム (ファーストフレーム・ラストフレームを指定する動画のワークフロー)。タイトルでラストフレーム用と
+    # 分かる LoadImage に入れる (last_frame_nodes)。None なら、ラストフレーム用の LoadImage にも元画像を入れる (今までどおり)
+    last_frame: Optional[str] = None
 
     @property
     def reader_name(self) -> str:
@@ -813,6 +816,8 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
         record["inserts"] = req.inserts
     if req.reference:
         record["reference"] = req.reference  # リファレンス画像 (主に顔)
+    if req.last_frame:
+        record["lastFrame"] = req.last_frame  # ラストフレーム
     try:
         with _history_lock:
             store.APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -1269,7 +1274,9 @@ REFERENCE_WORDS_JA = ("参照", "リファレンス", "顔")
 
 
 def is_reference_node(node: dict) -> bool:
-    """リファレンス画像 (主に顔) を入れる LoadImage か (タイトルで見分ける)。"""
+    """リファレンス画像 (主に顔) を入れる LoadImage か (タイトルで見分ける)。ラストフレーム用のものは除く。"""
+    if is_last_frame_node(node):
+        return False
     title = _title(node).lower()
     if any(w in title for w in REFERENCE_WORDS_JA):
         return True
@@ -1279,6 +1286,29 @@ def is_reference_node(node: dict) -> bool:
 def reference_nodes(wf: dict) -> list[dict]:
     """リファレンス画像を入れる場所: 実際に使われる LoadImage のうち、タイトルがリファレンス用のもの。"""
     return [n for n in _load_image_nodes(wf) if is_reference_node(n)]
+
+
+# ラストフレーム用の LoadImage (ファーストフレーム・ラストフレームを指定する動画のワークフロー):
+# タイトルにこの言葉を含むもの。英語は単語として (Legend・Friend・Blender などを拾わない)
+LAST_FRAME_WORDS = ("last", "end", "final")
+LAST_FRAME_WORDS_JA = ("ラスト", "最後", "終わり", "終了")
+
+
+def is_last_frame_node(node: dict) -> bool:
+    """ラストフレームを入れる LoadImage か (タイトルで見分ける。例: Last Frame / End Image / ラストフレーム)。"""
+    title = _title(node).lower()
+    if any(w in title for w in LAST_FRAME_WORDS_JA):
+        return True
+    return any(re.search(rf"(?<![a-z]){w}(?![a-z])", title) for w in LAST_FRAME_WORDS)
+
+
+def last_frame_nodes(wf: dict) -> list[dict]:
+    """ラストフレームを入れる場所: 実際に使われる LoadImage のうち、タイトルがラストフレーム用のもの。"""
+    return [n for n in _load_image_nodes(wf) if is_last_frame_node(n)]
+
+
+def has_last_frame(wf: dict) -> bool:
+    return bool(last_frame_nodes(wf))
 
 
 def has_reference(wf: dict) -> bool:
@@ -1405,7 +1435,9 @@ def generate(
                 raise GenerationCancelled()
             # リファレンスを渡されたときだけ、リファレンス用の LoadImage に分けて入れる (なければ今までどおり全部に元画像)
             ref_nodes = [n for n in load_nodes if is_reference_node(n)] if req.reference else []
-            src_nodes = [n for n in load_nodes if not any(n is r for r in ref_nodes)]
+            # ラストフレームも同じ: 渡されたときだけ、ラストフレーム用の LoadImage に分けて入れる
+            last_nodes = [n for n in load_nodes if is_last_frame_node(n)] if req.last_frame else []
+            src_nodes = [n for n in load_nodes if not any(n is r for r in ref_nodes + last_nodes)]
             if src_nodes:
                 progress("元画像を ComfyUI に送っています...")
                 uploaded = _upload_image(base_url, source)
@@ -1416,6 +1448,11 @@ def generate(
                 uploaded_ref = _upload_image(base_url, req.reference)
                 for node in ref_nodes:
                     node["inputs"]["image"] = uploaded_ref
+            if last_nodes:
+                progress("ラストフレームを ComfyUI に送っています...")
+                uploaded_last = _upload_image(base_url, req.last_frame)
+                for node in last_nodes:
+                    node["inputs"]["image"] = uploaded_last
         prompt = req.full_prompt
         if prompt is not None:
             marked = bool(_marker_slots(wf))
