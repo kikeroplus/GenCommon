@@ -121,14 +121,25 @@ class ComfySet:
     prompt: str = ""
     seconds: str = ""
     prompt_preset: int = -1  # 保存したときに選んでいたプロンプトのプリセット (0 始まり。なければ -1)
-    reader: Optional[str] = None  # 読み取りプリセットの名前 (空 = なし)
+    reader: Optional[str] = None  # 読み取りプリセットの名前 (使わないときも選んでいたものを覚える)
     reread: Optional[bool] = None  # 読み取り済みでも読み直す
-    enhancer: Optional[str] = None  # エンハンサーの名前 (空 = なし)
+    enhancer: Optional[str] = None  # エンハンサーの名前 (同上)
     inserts: Optional[list] = None  # 差し込みの欄の形 (inserts.py。フォルダは値で覚える)
+    # 読み取り・エンハンサーを使うか (2026-11-15 の「使う」チェック)。None は前の形式で、名前が空なら使わない
+    reader_use: Optional[bool] = None
+    enhancer_use: Optional[bool] = None
 
     @property
     def is_empty(self) -> bool:
         return not self.url and not self.workflow
+
+    @property
+    def uses_reader(self) -> bool:
+        return self.reader_use if self.reader_use is not None else bool(self.reader)
+
+    @property
+    def uses_enhancer(self) -> bool:
+        return self.enhancer_use if self.enhancer_use is not None else bool(self.enhancer)
 
     def label(self, index: int) -> str:
         return f"{index + 1}: " + ("(未登録)" if self.is_empty else self.name or "(名前なし)")
@@ -578,6 +589,10 @@ def sets() -> list[ComfySet]:
             s.reread = bool(item.get("reread"))
         if "enhancer" in item:
             s.enhancer = _str(item, "enhancer")
+        if isinstance(item.get("readerUse"), bool):
+            s.reader_use = item["readerUse"]
+        if isinstance(item.get("enhancerUse"), bool):
+            s.enhancer_use = item["enhancerUse"]
         if isinstance(item.get("inserts"), list):
             s.inserts = [d for d in item["inserts"] if isinstance(d, dict)]
     return result
@@ -600,6 +615,10 @@ def set_sets(items: list[ComfySet]) -> None:
             item["reread"] = s.reread
         if s.enhancer is not None:
             item["enhancer"] = s.enhancer
+        if s.reader_use is not None:
+            item["readerUse"] = s.reader_use
+        if s.enhancer_use is not None:
+            item["enhancerUse"] = s.enhancer_use
         if s.inserts is not None:
             item["inserts"] = s.inserts
         data.append(item)

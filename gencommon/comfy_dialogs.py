@@ -1163,6 +1163,13 @@ class GenerateDialog(QDialog):
         self._reader_index: list[int] = []  # 欄の行 → 読み取りプリセットの番号
         reader_row = QHBoxLayout()
         reader_row.addWidget(QLabel("読み取り"))
+        # 使うか。外すと読み取らず、下の欄に自分で書いたプロンプトを送る (選んだプリセットは覚えておく)
+        self.reader_use_check = QCheckBox("使う")
+        self.reader_use_check.setToolTip(
+            f"外すと読み取りをせず、自分で書いたプロンプトをすべての{pf.source_word}に使います"
+            "\n(選んでいる読み取りプリセットは覚えておくので、入れ直すと元に戻ります)")
+        self.reader_use_check.setChecked(carry.get("reader_use", load_use("reader_use.txt", True)))
+        reader_row.addWidget(self.reader_use_check)
         self.reader_box = QComboBox()
         self.reader_box.setMaxVisibleItems(20)
         reader_row.addWidget(self.reader_box, 1)
@@ -1174,13 +1181,25 @@ class GenerateDialog(QDialog):
         reader_settings.setToolTip("読み取りの設定 (サーバーURL、モデル、読み取りプリセットの登録)")
         reader_settings.clicked.connect(self._reader_settings)
         reader_row.addWidget(reader_settings)
+        # 読み取りを使わないときに送るプロンプト (自分で書く。すべての元画像に同じものを使う)
+        self.own_label = QLabel(f"送るプロンプト (自分で書く" + (f"。{len(captions)} {pf.unit}すべてに同じものを使います)"
+                                                                 if self.batch else ")"))
+        self.own_edit = QPlainTextEdit()
+        self.own_edit.setFixedHeight(110)
+        self.own_edit.setPlaceholderText("ComfyUI に送るプロンプトを書きます (.txt には書きません)")
+        self.own_edit.setPlainText(comfy.load("reader_own_prompt.txt") or "")
+        self._show_prompt_view = not self.prompt_view.isHidden()  # 説明プロンプトの欄を出すか (読み取りを使うとき)
         if pf.reads:
             layout.addLayout(reader_row)
-            self._fill_readers(reader.last_generate_index())
+            layout.addWidget(self.own_label)
+            layout.addWidget(self.own_edit)
+            self._fill_readers(carry.get("reader_pick", reader.last_generate_index()))
         else:
-            for widget in (self.reader_box, self.reread_check, reader_settings):
+            for widget in (self.reader_use_check, self.reader_box, self.reread_check, reader_settings,
+                           self.own_label, self.own_edit):
                 widget.hide()
             self.reread_check.setChecked(False)
+            self.reader_use_check.setChecked(False)
         self._reader_note = ""  # 記録の読み取りプリセットが見つからなかったときの知らせ
 
         # エンハンサー (プロンプトを AI で盛ってから送る)
@@ -1188,6 +1207,12 @@ class GenerateDialog(QDialog):
         self._enhancer_index = [-1]  # 欄の行 → エンハンサーの番号 (なしは -1)
         enhancer_row = QHBoxLayout()
         enhancer_row.addWidget(QLabel("エンハンサー"))
+        # 使うか。外すと盛らずに送る (選んだエンハンサーは覚えておく)
+        self.enhancer_use_check = QCheckBox("使う")
+        self.enhancer_use_check.setToolTip(
+            f"外すと、{pf.prompt_word}を盛らずにそのまま送ります"
+            "\n(選んでいるエンハンサーは覚えておくので、入れ直すと元に戻ります)")
+        enhancer_row.addWidget(self.enhancer_use_check)
         self.enhancer_box = QComboBox()
         self.enhancer_box.setMaxVisibleItems(20)
         enhancer_row.addWidget(self.enhancer_box, 1)
@@ -1196,7 +1221,11 @@ class GenerateDialog(QDialog):
         enhancer_settings.clicked.connect(self._enhancer_settings)
         enhancer_row.addWidget(enhancer_settings)
         layout.addLayout(enhancer_row)
-        self._fill_enhancers(enhancer.last_generate_index())
+        last_enhancer = enhancer.last_generate_index()
+        self._fill_enhancers(carry.get("enhancer_pick", last_enhancer))
+        # 前の形式 (「なし」を選んで切っていた) では、前回の番号が -1 なら使わない
+        self.enhancer_use_check.setChecked(
+            carry.get("enhancer_use", load_use("enhancer_use.txt", last_enhancer >= 0)) and bool(self._enhancer_index))
         self.enhancer_hint = _hint("")
         layout.addWidget(self.enhancer_hint)
         self._enhancer_note = ""  # 記録のエンハンサーが見つからなかったときの知らせ
@@ -1286,6 +1315,9 @@ class GenerateDialog(QDialog):
         self._apply_workflow()
         self.wf_box.currentIndexChanged.connect(self._apply_workflow)
         self.reread_check.toggled.connect(self._update_error)
+        self.reader_use_check.toggled.connect(lambda _on: self._update_reader_use())
+        self.enhancer_use_check.toggled.connect(lambda _on: self._update_enhancer_use())
+        self.own_edit.textChanged.connect(self._update_error)
         self.set_box.currentIndexChanged.connect(self._on_set)
         # ワークフローを (人が) 選んだら、その台の接続先にする。セットや前回の値で選んだときは変えない
         self.wf_box.activated.connect(self._match_connection)
@@ -1299,10 +1331,12 @@ class GenerateDialog(QDialog):
                 prefill.url, prefill.workflow_path,
                 "" if prefill.seconds is None else comfy.format_seconds(prefill.seconds),
             )
-            self._apply_reader(prefill.reader)
+            self._apply_reader(prefill.reader, prefill.prompt)
             self._apply_enhancer(prefill.enhancer)
             # 記録に差し込みがなければ、そのときは使っていない (入力中の内容は欄の形で持つ)
             self._apply_inserts(prefill.inserts if prefill.inserts is not None else [])
+        self._update_reader_use()
+        self._update_enhancer_use()
         self._show_enhancer_hint()
         self._update_machine_hint()
 
@@ -1371,18 +1405,54 @@ class GenerateDialog(QDialog):
         self.reader_box.blockSignals(False)
 
     def _fill_enhancers(self, index: int):
-        """エンハンサーを読み直して欄に並べ、index 番 (なしは -1) を選ぶ。"""
+        """エンハンサーを読み直して欄に並べ、index 番を選ぶ (使わないときは「使う」のチェックで切る)。"""
         self._enhancers = enhancer.load_presets()
-        self._enhancer_index = [-1]
+        self._enhancer_index = []
         self.enhancer_box.blockSignals(True)
         self.enhancer_box.clear()
-        self.enhancer_box.addItem(f"なし ({self.profile.prompt_word}をそのまま送る)")
         for i, preset in enumerate(self._enhancers):
             if not preset.is_empty:
                 self.enhancer_box.addItem(preset.label(i))
                 self._enhancer_index.append(i)
+        if not self._enhancer_index:
+            self.enhancer_box.addItem("(エンハンサーが未登録です。「設定...」で登録してください)")
         self._select_enhancer(index)
         self.enhancer_box.blockSignals(False)
+        if hasattr(self, "enhancer_use_check"):
+            self._update_enhancer_use()
+
+    # --- 「使う」のチェック ---------------------------------------------
+    @property
+    def reader_used(self) -> bool:
+        """読み取りを使う (外すと、自分で書いたプロンプトを送る)。"""
+        return self.profile.reads and self.reader_use_check.isChecked()
+
+    @property
+    def own_prompt(self) -> str:
+        """読み取りを使わないときに送る、自分で書いたプロンプト。"""
+        return self.own_edit.toPlainText().strip()
+
+    def _update_reader_use(self):
+        """読み取りの「使う」に合わせて、欄を使える・使えない、説明の欄と自分で書く欄を切り替える。"""
+        if not self.profile.reads:
+            return
+        use = self.reader_use_check.isChecked()
+        self.reader_box.setEnabled(use and bool(self._reader_index))
+        self.reread_check.setEnabled(use)
+        self.prompt_label.setVisible(use)
+        self.prompt_view.setVisible(use and self._show_prompt_view)
+        self.own_label.setVisible(not use)
+        self.own_edit.setVisible(not use)
+        self._update_error()
+
+    def _update_enhancer_use(self):
+        has = bool(self._enhancer_index)
+        if not has:
+            self.enhancer_use_check.setChecked(False)
+        self.enhancer_use_check.setEnabled(has)
+        self.enhancer_box.setEnabled(has and self.enhancer_use_check.isChecked())
+        if hasattr(self, "enhancer_hint"):  # 作っている途中 (欄を並べた直後) は、説明はあとで出す
+            self._show_enhancer_hint()
 
     def _reader_settings(self):
         current = self._current_reader()
@@ -1406,11 +1476,19 @@ class GenerateDialog(QDialog):
             self.reader_box.setCurrentIndex(0)
         return False
 
-    def _apply_reader(self, snap: Optional[dict]):
-        """記録や入力中の内容の読み取りプリセットを選ぶ。番号が分かればそれ、なければ名前で探す。"""
+    def _apply_reader(self, snap: Optional[dict], prompt: Optional[str] = None):
+        """記録や入力中の内容の読み取りプリセットを選ぶ。番号が分かればそれ、なければ名前で探す。
+
+        読み取りのあるアプリで snap がない (読み取りを使っていない) ときは「使う」を外し、
+        prompt (そのとき送ったプロンプト) があれば自分で書く欄に入れる。"""
         self._reader_note = ""
         if snap is None:
+            if self.profile.reads:
+                self.reader_use_check.setChecked(False)
+                if prompt and prompt.strip():
+                    self.own_edit.setPlainText(prompt.strip())
             return
+        self.reader_use_check.setChecked(True)
         index = snap.get("index")
         if isinstance(index, int) and self._select_reader(index):
             return
@@ -1428,30 +1506,45 @@ class GenerateDialog(QDialog):
         if index in self._enhancer_index:
             self.enhancer_box.setCurrentIndex(self._enhancer_index.index(index))
             return True
-        self.enhancer_box.setCurrentIndex(0)
+        if index >= 0 or self.enhancer_box.currentIndex() < 0:
+            self.enhancer_box.setCurrentIndex(0)  # 見つからない: 先頭 (-1 なら、選んでいるものはそのまま)
         return False
 
     def _apply_enhancer(self, snap: Optional[dict]):
-        """記録や入力中の内容のエンハンサーを選ぶ。番号が分かればそれ、なければ名前で探す。"""
+        """記録や入力中の内容のエンハンサーを選ぶ。番号が分かればそれ、なければ名前で探す。
+        snap がない (エンハンサーを使っていない) ときは「使う」を外す (選んでいるものはそのまま)。"""
         self._enhancer_note = ""
         if snap is None:
-            self._select_enhancer(-1)
+            self.enhancer_use_check.setChecked(False)
             return
         index = snap.get("index")
         if isinstance(index, int) and self._select_enhancer(index):
+            self.enhancer_use_check.setChecked(True)
             return
         name = str(snap.get("name", ""))
         found = next((i for i, p in enumerate(self._enhancers) if name and p.name == name and not p.is_empty), -1)
         self._select_enhancer(found)
+        self.enhancer_use_check.setChecked(found >= 0)
         if found < 0:
-            self._enhancer_note = f"記録のエンハンサー「{name}」は登録にないので、「なし」にしました。"
+            self._enhancer_note = f"記録のエンハンサー「{name}」は登録にないので、使わないことにしました。"
 
     def _current_enhancer(self) -> int:
+        """選んでいるエンハンサー (使うかどうかにかかわらず。未登録なら -1)。"""
+        if not self._enhancer_index:
+            return -1
         return self._enhancer_index[max(self.enhancer_box.currentIndex(), 0)]
+
+    def _used_enhancer(self) -> int:
+        """盛るときのエンハンサー (「使う」を外していれば -1)。"""
+        return self._current_enhancer() if self.enhancer_use_check.isChecked() else -1
+
+    def _used_reader(self) -> int:
+        """読み取るときの読み取りプリセット (「使う」を外していれば -1)。"""
+        return self._current_reader() if self.reader_used else -1
 
     def _show_enhancer_hint(self):
         notes = [self._reader_note] if self._reader_note else []
-        if self._current_enhancer() >= 0:
+        if self._used_enhancer() >= 0:
             self._enhancer_note = ""
             notes.append(
                 f"{self.profile.prompt_word}を AI で盛ってから送ります (ベースプロンプトは盛りません)。"
@@ -1470,14 +1563,16 @@ class GenerateDialog(QDialog):
         if wf >= 0:
             r.workflow_path = self._wf_path[wf]
             r.workflow_name = self._wf_name[wf]
-        if not self.batch and self.captions[0][1].strip():
+        if self.profile.reads and not self.reader_used:
+            r.prompt = self.own_prompt or None  # 読み取りを使わない: 自分で書いたプロンプト
+        elif not self.batch and self.captions[0][1].strip():
             r.prompt = self.captions[0][1]
         if self.seconds_edit.isEnabled():
             r.seconds = _parse_seconds(self.seconds_edit.text())
-        index = self._current_reader()
+        index = self._used_reader()
         if index >= 0:
             r.reader = {"name": self._readers[index].name, "index": index}
-        index = self._current_enhancer()
+        index = self._used_enhancer()
         if index >= 0:
             r.enhancer = {"name": self._enhancers[index].name, "index": index}
         r.inserts = inserts.to_data(self._current_slots())
@@ -1548,9 +1643,11 @@ class GenerateDialog(QDialog):
         """生成できない理由を出し、「生成する」を押せるかを決める。"""
         pf = self.profile
         error = self._workflow_error
-        if (error is None and pf.reads and (self.unread or self.reread_check.isChecked())
+        if (error is None and self.reader_used and (self.unread or self.reread_check.isChecked())
                 and self._current_reader() < 0):
             error = "読み取りプリセットが登録されていないので、説明プロンプトを読み取れません。「設定...」で登録してください。"
+        if error is None and pf.reads and not self.reader_used and not self.own_prompt:
+            error = "読み取りを使わないときは、送るプロンプトを書いてください。"
         if error is None and pf.skip_empty and not self.batch and not self.captions[0][1].strip():
             error = f"{pf.source_word}の{pf.prompt_word}が空です。{pf.prompt_word}を書いてから生成してください。"
         if error is None:
@@ -1576,15 +1673,20 @@ class GenerateDialog(QDialog):
         notes = []
         if self.profile.reads and s.reader:
             found = self._find_by_name(self._readers, s.reader)
-            if not self._select_reader(found):
+            if not self._select_reader(found) and s.uses_reader:
                 notes.append(f"セットの読み取りプリセット「{s.reader}」は登録にないので、別のものを選びました。")
+        if self.profile.reads and s.reader is not None:
+            self.reader_use_check.setChecked(s.uses_reader)
+            if s.reader_use is not None:  # 自分で書いたプロンプトは、今の形式のセットだけが持つ
+                self.own_edit.setPlainText(s.prompt)
         if self.profile.reads and s.reread is not None:
             self.reread_check.setChecked(s.reread)
         if s.enhancer is not None:
             found = self._find_by_name(self._enhancers, s.enhancer) if s.enhancer else -1
-            self._select_enhancer(found)
-            if s.enhancer and found < 0:
-                notes.append(f"セットのエンハンサー「{s.enhancer}」は登録にないので、「なし」にしました。")
+            self._select_enhancer(found)  # 名前がない (前の形式の「なし」) ときは、選んでいるものはそのまま
+            self.enhancer_use_check.setChecked(s.uses_enhancer and found >= 0)
+            if s.uses_enhancer and found < 0:
+                notes.append(f"セットのエンハンサー「{s.enhancer}」は登録にないので、使わないことにしました。")
         if s.inserts is not None:
             self._apply_inserts(s.inserts)
         self._reader_note = "\n".join(notes)
@@ -1620,12 +1722,16 @@ class GenerateDialog(QDialog):
         s.prompt = ""
         s.prompt_preset = -1
         s.seconds = self.seconds_edit.text().strip() if self.seconds_edit.isEnabled() else ""
+        # 読み取り・エンハンサーは、選んでいるもの (使わないときも) と「使う」を別に覚える
         if self.profile.reads:
             index = self._current_reader()
             s.reader = self._readers[index].name if index >= 0 else ""
+            s.reader_use = self.reader_use_check.isChecked()
+            s.prompt = self.own_edit.toPlainText().strip()  # 読み取りを使わないときに送るプロンプト
             s.reread = self.reread_check.isChecked()
         index = self._current_enhancer()
         s.enhancer = self._enhancers[index].name if index >= 0 else ""
+        s.enhancer_use = self.enhancer_use_check.isChecked()
         s.inserts = inserts.to_data(self._current_slots())
         comfy.set_sets(self._sets)
         self._relabel_set(n)
@@ -1644,17 +1750,39 @@ class GenerateDialog(QDialog):
     def _open_settings(self, tab: str = ""):
         self.settings_tab = tab if isinstance(tab, str) else ""  # clicked から呼ぶと bool が来る
         self.reopen = self._fields()
+        self.carry = self._carry()
         comfy.set_use_base_prompt(self.base_check.isChecked())  # 開き直したときも同じ状態に
         self.reject()
 
     def _switch_view(self):
         """いつもの画面と図の画面を切り替える。入力した内容を持って閉じ、呼び出し側がもう一方で開き直す。"""
         self.reopen = self._fields()
-        self.carry = {"repeat": self.repeat_edit.text().strip() or "1", "set": self.set_box.currentIndex(),
-                      "reread": self.reread_check.isChecked()}
+        self.carry = self._carry()
         comfy.set_use_base_prompt(self.base_check.isChecked())
         self.switch_view = True
         self.reject()
+
+    def _carry(self) -> dict:
+        """開き直すときに持っていく、reopen (GenRequest) にない欄。
+        読み取り・エンハンサーは、使わないときも選んでいたものを持っていく。"""
+        return {"repeat": self.repeat_edit.text().strip() or "1", "set": self.set_box.currentIndex(),
+                "reread": self.reread_check.isChecked(),
+                "reader_use": self.reader_use_check.isChecked(), "reader_pick": self._current_reader(),
+                "enhancer_use": self.enhancer_use_check.isChecked(), "enhancer_pick": self._current_enhancer()}
+
+    def _save_choices(self):
+        """読み取り・エンハンサーの選んだもの・「使う」・自分で書いたプロンプトを、前回の値として保存する。"""
+        if self.profile.reads:
+            index = self._current_reader()
+            if index >= 0:
+                reader.set_last_generate_index(index)
+            comfy.save("reader_reread.txt", "1" if self.reread_check.isChecked() else "0")
+            save_use("reader_use.txt", self.reader_use_check.isChecked())
+            comfy.save("reader_own_prompt.txt", self.own_edit.toPlainText().strip())
+        index = self._current_enhancer()
+        if index >= 0:
+            enhancer.set_last_generate_index(index)
+        save_use("enhancer_use.txt", self.enhancer_use_check.isChecked())
 
     def _paste(self):
         r = paste_params()
@@ -1718,15 +1846,12 @@ class GenerateDialog(QDialog):
         comfy.set_active_workflow(self._wf_index[wf])
         comfy.set_last_set(self.set_box.currentIndex())
         if self.profile.reads:
-            index = self._current_reader()
+            index = self._used_reader()
             self.reader_preset = self._readers[index] if index >= 0 else None
-            if index >= 0:
-                reader.set_last_generate_index(index)
-            self.reread = self.reread_check.isChecked()
-            comfy.save("reader_reread.txt", "1" if self.reread else "0")
-        index = self._current_enhancer()
+            self.reread = self.reader_used and self.reread_check.isChecked()
+        index = self._used_enhancer()
         self.enhancer_preset = self._enhancers[index] if index >= 0 else None
-        enhancer.set_last_generate_index(index)
+        self._save_choices()
         self.insert_slots = self._current_slots()
         inserts.save_slots(self.insert_slots)
         comfy.set_use_base_prompt(use_base)
@@ -1737,6 +1862,16 @@ class GenerateDialog(QDialog):
 
 def _one_line(text: str, limit: int) -> str:
     return _shorten(" ".join(line.strip() for line in text.splitlines() if line.strip()), limit)
+
+
+def load_use(name: str, default: bool) -> bool:
+    """「使う」のチェックの前回の値 (アプリごと。ファイルがなければ default)。"""
+    value = (comfy.load(name) or "").strip()
+    return default if value not in ("0", "1") else value == "1"
+
+
+def save_use(name: str, use: bool) -> None:
+    comfy.save(name, "1" if use else "0")
 
 
 def _parse_seconds(text: str) -> Optional[float]:

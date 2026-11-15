@@ -228,8 +228,8 @@ def describe_sets(sets: list[comfy.ComfySet], connections: list[tuple[str, str]]
         lines = [f"WF: {wf_name}", f"接続: {conn_label}"]
         steps = []
         if reads:
-            steps.append("読取: " + ("—" if s.reader is None else (s.reader or "なし")))
-        steps.append("盛る: " + ("—" if s.enhancer is None else (s.enhancer or "なし")))
+            steps.append("読取: " + ("—" if s.reader is None else s.reader if s.uses_reader else "使わない"))
+        steps.append("盛る: " + ("—" if s.enhancer is None else s.enhancer if s.uses_enhancer else "使わない"))
         lines.append("  ".join(steps))
         used = _insert_names(s)
         if used:
@@ -242,11 +242,20 @@ def describe_sets(sets: list[comfy.ComfySet], connections: list[tuple[str, str]]
                f"ワークフロー: {wf_name}  ({s.workflow})", f"接続先: {conn_label}  ({s.url})"]
         if s.seconds:
             tip.append(f"長さ: {s.seconds} 秒")
+        def use_text(name: Optional[str], use: bool) -> str:
+            if name is None:
+                return "(この項目なし。選んでも変えない)"
+            if use:
+                return name
+            return "使わない" + (f" (選んでいるもの: {name})" if name else "")
+
         if reads:
-            tip.append("読み取り: " + ("(この項目なし。選んでも変えない)" if s.reader is None else (s.reader or "なし")))
-            if s.reread is not None:
+            tip.append("読み取り: " + use_text(s.reader, s.uses_reader))
+            if s.reader is not None and not s.uses_reader and s.prompt:
+                tip.append("送るプロンプト (自分で書いたもの): " + (s.prompt if len(s.prompt) <= 200 else s.prompt[:200] + "..."))
+            elif s.reread is not None:
                 tip.append("読み取り済みでも読み直す: " + ("する" if s.reread else "しない"))
-        tip.append("エンハンサー: " + ("(この項目なし。選んでも変えない)" if s.enhancer is None else (s.enhancer or "なし")))
+        tip.append("エンハンサー: " + use_text(s.enhancer, s.uses_enhancer))
         if s.inserts is None:
             tip.append("差し込み: (この項目なし。選んでも変えない)")
         else:

@@ -333,12 +333,11 @@ class GenerationController(QObject):
                 break
             if dialog.reopen is None:
                 return
-            carry = None
+            carry = dialog.carry or None  # 回数・セット・読み取りとエンハンサーの選んだもの・「使う」
             if dialog.switch_view:
                 # いつもの画面 ⇔ 図の画面: 入力した内容のまま、もう一方で開き直す
                 diagram = not diagram
                 prefill = dialog.reopen
-                carry = dialog.carry
                 continue
             # 「生成の設定...」が押された: 設定を出してから、入力していた内容で開き直す。
             # 設定を OK で閉じたときは、そこで選んだ接続先とワークフローを使う
@@ -371,11 +370,14 @@ class GenerationController(QObject):
             return
         new_jobs = []
         to_read = 0
+        own = p.reads and not dialog.reader_used  # 読み取りを使わない: 自分で書いたプロンプトをすべてに使う
         try:
             batch = total > 1
             group = next(_groups)
             for source, text in captions:
-                need_read = p.reads and (dialog.reread or not text)
+                if own:
+                    text = dialog.own_prompt
+                need_read = p.reads and not own and (dialog.reread or not text)
                 to_read += need_read
                 for _ in range(repeat):
                     req = request.copy(prompt=None if need_read else text, inserts=picker.next())

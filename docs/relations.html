@@ -114,7 +114,7 @@ svg #ahs path { fill: var(--shared-line); }
   <rect class="opt" x="760" y="260" width="260" height="80" rx="8"/>
   <text class="t" x="890" y="290" text-anchor="middle">エンハンサーで盛る</text>
   <text class="s" x="890" y="311" text-anchor="middle">雛形の {prompt} に入れて LLM へ</text>
-  <text class="s" x="890" y="329" text-anchor="middle">「なし」なら素通り</text>
+  <text class="s" x="890" y="329" text-anchor="middle">外せば素通り</text>
 
   <!-- 4 段目: 送る -->
   <rect class="opt" x="770" y="410" width="240" height="80" rx="8"/>
@@ -176,7 +176,7 @@ svg #ahs path { fill: var(--shared-line); }
 
 <ol class="steps">
   <li><b>読み取り</b> (J-Rate・ImageMimicArt): 読み取りプリセットを選ぶと、元画像を LLM に送って説明プロンプトを作り、画像と同じ名前の <code>.txt</code> に書く。読み取り済みの画像は <code>.txt</code> をそのまま使う (「読み取り済みでも読み直す」で読み直す)。同じ画像を何回ぶん頼んでも読み取りは 1 回。</li>
-  <li><b>組み立て</b> (J-Rate): 入力に <code>{caption}</code> があればそこに説明を入れ、なければ「説明 + 改行 + 入力」。入力が空なら説明だけ。読み取りなしなら <code>{caption}</code> は空になる。</li>
+  <li><b>組み立て</b> (J-Rate): 入力に <code>{caption}</code> があればそこに説明を入れ、なければ「説明 + 改行 + 入力」。入力が空なら説明だけ。読み取りを使わないなら <code>{caption}</code> は空になる。</li>
   <li><b>エンハンサー</b>: 選んでいれば、エンハンサーの雛形の <code>{prompt}</code> に 2 の結果を入れて LLM に送り、返ってきた文 (盛った本文) に差し替える。</li>
   <li><b>ベースプロンプト</b>: 生成の画面のチェックがオンなら、ワークフローが動画用なら動画用、画像用なら画像用のベースプロンプトを、改行をはさんで最後に付ける。</li>
   <li><b>入れ先</b>: ワークフローの文字列に <code>{prompt}</code> の目印があればそこを置き換える。なければ Positive / User Prompt のノード、なければ CLIPTextEncode。タイトルに Negative とあるノードと、実際には使われない側 (Switch など) には入れない。</li>
@@ -205,8 +205,8 @@ LLM の接続 (サーバーURL・読み取り用モデル・エンハンサー�
 <tr><th>項目</th><th>覚え方</th></tr>
 <tr><td>接続先・ワークフロー</td><td>URL・ファイルの場所</td></tr>
 <tr><td>プロンプト・秒数・プロンプトのプリセット</td><td>そのときの値</td></tr>
-<tr><td>読み取りプリセット・読み取り済みでも読み直す</td><td>名前とチェック。名前が共有の一覧になければ「なし」にして知らせる</td></tr>
-<tr><td>エンハンサー</td><td>名前。共有の一覧になければ「なし」にして知らせる</td></tr>
+<tr><td>読み取りプリセット・使う・読み取り済みでも読み直す</td><td>名前とチェック。名前が共有の一覧になければ使わないことにして知らせる</td></tr>
+<tr><td>エンハンサー・使う</td><td>名前とチェック。共有の一覧になければ使わないことにして知らせる</td></tr>
 </table></div>
 <p>セットは名前で共有の設定を指すだけなので、共有の読み取りプリセットやエンハンサーの中身を直すと、それを指すすべてのセットに効く。</p>
 

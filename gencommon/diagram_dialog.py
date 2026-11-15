@@ -127,6 +127,7 @@ class DiagramGenerateDialog(GenerateDialog):
         self._selected = "generate"
         self._build()
         for signal in (self.enhancer_box.currentIndexChanged, self.reader_box.currentIndexChanged,
+                       self.reader_use_check.toggled, self.enhancer_use_check.toggled, self.own_edit.textChanged,
                        self.reread_check.toggled, self.base_check.toggled, self.wf_box.currentIndexChanged,
                        self.conn_box.currentIndexChanged, self.seconds_edit.textChanged,
                        self.repeat_edit.textChanged, self.set_box.currentIndexChanged):
@@ -182,10 +183,14 @@ class DiagramGenerateDialog(GenerateDialog):
             box.layout().addWidget(self.prompt_view)
             row = QHBoxLayout()
             row.addWidget(QLabel("読み取り"))
+            row.addWidget(self.reader_use_check)
             row.addWidget(self.reader_box, 1)
             row.addWidget(self.reader_settings_button)
             box.layout().addLayout(row)
             box.layout().addWidget(self.reread_check)
+            # 読み取りを使わないときは、ここに送るプロンプトを自分で書く
+            box.layout().addWidget(self.own_label)
+            box.layout().addWidget(self.own_edit)
             steps.append(("source", "読み取り", True, box))
         else:
             box = self._group(f"元にするもの ({pf.source_word}の{pf.prompt_word})")
@@ -195,6 +200,7 @@ class DiagramGenerateDialog(GenerateDialog):
 
         box = self._group("エンハンサー (共有)", LLM_LINE)
         row = QHBoxLayout()
+        row.addWidget(self.enhancer_use_check)
         row.addWidget(self.enhancer_box, 1)
         row.addWidget(self.enhancer_settings_button)
         box.layout().addLayout(row)
@@ -286,7 +292,11 @@ class DiagramGenerateDialog(GenerateDialog):
             self.prompt_label.setText(
                 f"{pf.source_word}を選んでいません (選んでから開くと、その{pf.prompt_word}で送る前の確認を見られます)")
             self.prompt_view.hide()
+            self._show_prompt_view = False
         self.prompt_view.setMaximumHeight(16777215)
+        self.own_edit.setMinimumHeight(70)
+        self.own_edit.setMaximumHeight(16777215)
+        self._update_reader_use()
         self.view_button.setText("いつもの画面で開く")
         self.view_button.setToolTip("いつもの生成の画面に切り替えます (入力した内容はそのまま)")
         if self.settings_only:
@@ -410,12 +420,7 @@ class DiagramGenerateDialog(GenerateDialog):
         if self.seconds_edit.isEnabled() and _parse_seconds(self.seconds_edit.text()) is not None:
             comfy.set_last_seconds(self.seconds_edit.text())
         comfy.set_last_set(self.set_box.currentIndex())
-        if self.profile.reads:
-            index = self._current_reader()
-            if index >= 0:
-                reader.set_last_generate_index(index)
-            comfy.save("reader_reread.txt", "1" if self.reread_check.isChecked() else "0")
-        enhancer.set_last_generate_index(self._current_enhancer())
+        self._save_choices()
         inserts.save_slots(self._current_slots())
         comfy.set_use_base_prompt(self.base_check.isChecked())
         self.accept()
@@ -432,7 +437,7 @@ class DiagramGenerateDialog(GenerateDialog):
         return unread or every
 
     def _read_now(self):
-        index = self._current_reader()
+        index = self._used_reader()
         targets = self._read_targets()
         if index < 0 or not targets or self._reading:
             return
@@ -502,11 +507,12 @@ class DiagramGenerateDialog(GenerateDialog):
                 f"{name} : {_one_line(text, 120) if text.strip() else '(未読み取り)'}" for name, text in captions))
         elif self.unread:
             self.prompt_label.setText(f"{pf.prompt_word} ({captions[0][0]}): まだ読み取っていません。ジョブの中で読み取ります。")
-            self.prompt_view.hide()
+            self._show_prompt_view = False
         else:
             self.prompt_label.setText(f"{pf.prompt_word} ({captions[0][0]} の .txt。書き換えるときは{pf.prompt_where}で)")
             self.prompt_view.setPlainText(captions[0][1])
-            self.prompt_view.show()
+            self._show_prompt_view = True
+        self._update_reader_use()  # 説明の欄を出すかは、読み取りの「使う」にも合わせる
 
     # --- 設定から戻ったとき --------------------------------------------
     def _reader_settings(self):
@@ -528,14 +534,20 @@ class DiagramGenerateDialog(GenerateDialog):
         pf = self.profile
         name, text = self.captions[0]
         text = text.strip()
-        reread = pf.reads and self.reread_check.isChecked()
-        will_read = pf.reads and (reread or not text)
-        e_index = self._current_enhancer()
+        own = pf.reads and not self.reader_used  # 読み取りを使わず、自分で書いたプロンプトを送る
+        if own:
+            text = self.own_prompt
+        reread = self.reader_used and self.reread_check.isChecked()
+        will_read = self.reader_used and (reread or not text)
+        e_index = self._used_enhancer()
         enh = self._enhancers[e_index] if e_index >= 0 else None
         use_base = self.base_check.isChecked() and bool(self._base_prompt)
 
         # 各段を通ったあとの文 (分からないところは〈〉で示す)
-        after_source = f"〈読み取った{pf.prompt_word}〉" if will_read else text or f"〈{pf.prompt_word}〉"
+        if own:
+            after_source = text or "〈自分で書くプロンプト〉"
+        else:
+            after_source = f"〈読み取った{pf.prompt_word}〉" if will_read else text or f"〈{pf.prompt_word}〉"
         # 差し込み: 使う枠の次のファイル (1 件目のジョブの分)
         self._insert_items = []
         for row in self.insert_rows:
@@ -555,7 +567,12 @@ class DiagramGenerateDialog(GenerateDialog):
 
         states = {}
         # 1. 読み取り / 本文
-        if pf.reads:
+        if own:
+            states["source"] = ("使わない (自分で書いたプロンプトを送る)" if text
+                                else "使わない (送るプロンプトを書いてください)", True)
+            if self.read_button is not None:
+                self.read_button.setEnabled(False)
+        elif pf.reads:
             done = len(self.captions) - self.unread
             if self.batch:
                 state = f"済み {done} / 未 {self.unread} {pf.unit}" + (" → すべて読み直す" if reread else "")
@@ -577,7 +594,7 @@ class DiagramGenerateDialog(GenerateDialog):
             states["source"] = (f"{len(self.captions)} {pf.unit}それぞれの{pf.prompt_word}" if self.batch
                                 else f"〈{pf.prompt_word}〉" if self._no_file else f"{name} の{pf.prompt_word}", False)
         # 2. 盛る
-        states["enhance"] = (enh.name if enh else "なし (素通り)", enh is None)
+        states["enhance"] = (enh.name if enh else "使わない (素通り)", enh is None)
         # 差し込み
         if self._insert_items:
             states["insert"] = ("\n".join(
@@ -628,6 +645,11 @@ class DiagramGenerateDialog(GenerateDialog):
         if key == "source":
             if not pf.reads:
                 return f"{step} のあと: {pf.prompt_word}", text or f"({pf.prompt_word}が空です)"
+            if not self.reader_used:
+                every = f" {len(self.captions)} {pf.unit}すべてに" if self.batch else ""
+                return (f"{step}: 使わない",
+                        f"読み取りは使いません。左の欄に書いたプロンプトを{every}そのまま送ります (.txt には書きません)。\n\n"
+                        + (text or "(まだ書いていません)"))
             index = self._current_reader()
             preset = self._readers[index].name if index >= 0 else "(未登録)"
             how = (f"読み取りプリセット「{preset}」・モデル {settings.reader_model()} で読み取ります。"
@@ -643,7 +665,7 @@ class DiagramGenerateDialog(GenerateDialog):
             return f"{step} のあと: {pf.prompt_word} (.txt の内容)", text
         if key == "enhance":
             if enh is None:
-                return f"{step} のあと", f"エンハンサーは「なし」です。前の段の文をそのまま次へ渡します。\n\n{self._enh_input}"
+                return f"{step} のあと", f"エンハンサーは使いません。前の段の文をそのまま次へ渡します。\n\n{self._enh_input}"
             message = enhancer.user_message(enh.template, self._enh_input)
             return (f"{step}: 生成のときに LLM に送る内容",
                     f"エンハンサー「{enh.name}」・モデル {settings.enhance_model()} で盛ります。"
