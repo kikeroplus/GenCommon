@@ -172,6 +172,12 @@ class GenRequest:
     # ラストフレーム (ファーストフレーム・ラストフレームを指定する動画のワークフロー)。タイトルでラストフレーム用と
     # 分かる LoadImage に入れる (last_frame_nodes)。None なら、ラストフレーム用の LoadImage にも元画像を入れる (今までどおり)
     last_frame: Optional[str] = None
+    # PrismLab の量産・試作: 入口のファイル (どのステップの出力でも同じ)・始めたときの入口のテキストの中身・
+    # レシピ名・何番目のステップか (1 から)。PromptWordCrafter の生成結果の帯がテキストから結果をたどるのに使う
+    origin: str = ""
+    origin_text: Optional[str] = None
+    recipe: str = ""
+    step: int = 0
 
     @property
     def reader_name(self) -> str:
@@ -818,6 +824,14 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
         record["reference"] = req.reference  # リファレンス画像 (主に顔)
     if req.last_frame:
         record["lastFrame"] = req.last_frame  # ラストフレーム
+    if req.origin:
+        record["origin"] = req.origin  # 入口のファイル (PrismLab の量産)
+        if req.origin_text is not None:
+            record["originText"] = req.origin_text
+        if req.recipe:
+            record["recipe"] = req.recipe
+        if req.step:
+            record["step"] = req.step
     try:
         with _history_lock:
             store.APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -847,27 +861,34 @@ def find_history_by_source(source: str) -> Optional[GenRecord]:
 
 
 # 記録は書き足す一方なので、前に読んだところから先だけを読む。
-# ((パス, ファイルの番号), 読んだバイト数, 記録)。書き換えたとき (rename_in_history) は捨てる
-_history_cache: tuple = (None, 0, [])
+# ファイルのパス → ((パス, ファイルの番号), 読んだバイト数, 記録)。書き換えたとき (rename_in_history) は捨てる
+_history_caches: dict = {}
 
 
-def read_history() -> list[GenRecord]:
-    """すべての記録 (古い順)。
+def _history_path(app_name: Optional[str] = None) -> tuple[Path, bool]:
+    """記録のファイルと、別のアプリのものか。"""
+    if app_name is not None and app_name != store.APP_NAME:
+        return store.APP_DIR.parent / app_name / "comfy_history.txt", True
+    return file_path("comfy_history.txt"), False
+
+
+def read_history(app_name: Optional[str] = None) -> list[GenRecord]:
+    """すべての記録 (古い順)。app_name を渡すと別のアプリの記録 (%APPDATA%\\(app_name)\\comfy_history.txt)。
 
     ファイルを選ぶたびに呼ばれるので、前に読んだものに書き足された分だけを足して返す。
     返した記録は書き換えないこと (読むだけの呼び出し元で共有している)。
     """
-    global _history_cache
     try:
         with _history_lock:
-            path = file_path("comfy_history.txt")
+            path, _other = _history_path(app_name)
+            cache_key = str(path)
             try:
                 stat = path.stat()
             except FileNotFoundError:
-                _history_cache = (None, 0, [])
+                _history_caches.pop(cache_key, None)
                 return []
             identity = (str(path), stat.st_ino)
-            cached_identity, offset, records = _history_cache
+            cached_identity, offset, records = _history_caches.get(cache_key, (None, 0, []))
             if cached_identity != identity or stat.st_size < offset:
                 offset, records = 0, []  # 初めて読む・別のファイルに置き換わった・短くなった
             if stat.st_size == offset:
@@ -892,7 +913,7 @@ def read_history() -> list[GenRecord]:
             continue
         if isinstance(item, dict):
             records.append(_to_record(item))
-    _history_cache = (identity, offset + end, records)
+    _history_caches[cache_key] = (identity, offset + end, records)
     return list(records)
 
 
@@ -903,7 +924,6 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
     app_name を渡すと、別のアプリの記録 (%APPDATA%\\(app_name)\\comfy_history.txt) を書き換える
     (PromptWordCrafter で結果を移したとき、それを元画像にした ImageMimicArt の記録も付け替えるなど)。
     """
-    global _history_cache
     if not renames:
         return 0
     table = {os.path.normcase(os.path.abspath(old)): new for old, new in renames.items()}
@@ -916,11 +936,7 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
     changed = 0
     try:
         with _history_lock:
-            other = app_name is not None and app_name != store.APP_NAME
-            if other:
-                path = store.APP_DIR.parent / app_name / "comfy_history.txt"
-            else:
-                path = file_path("comfy_history.txt")
+            path, _other = _history_path(app_name)
             if not path.is_file():
                 return 0
             lines = path.read_text(encoding="utf-8-sig").splitlines()
@@ -933,7 +949,7 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
                     continue
                 if isinstance(data, dict):
                     hit = False
-                    for key in ("source", "output"):
+                    for key in ("source", "output", "origin"):
                         new = mapped(_str(data, key))
                         if new is not None:
                             data[key] = new
@@ -946,8 +962,7 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
                 temp = path.with_name(path.name + ".tmp")
                 temp.write_text("".join(x + "\r\n" for x in out), encoding="utf-8", newline="")
                 temp.replace(path)
-                if not other:
-                    _history_cache = (None, 0, [])  # 書き換えたので、次は読み直す
+                _history_caches.pop(str(path), None)  # 書き換えたので、次は読み直す
     except (OSError, UnicodeDecodeError):
         return 0
     return changed
@@ -975,6 +990,15 @@ def _to_record(data: dict) -> GenRecord:
             req.seconds = float(data["seconds"])
         except (TypeError, ValueError):
             pass
+    if data.get("origin"):
+        req.origin = _str(data, "origin")
+        if data.get("originText") is not None:
+            req.origin_text = str(data["originText"])
+        req.recipe = _str(data, "recipe")
+        try:
+            req.step = int(data.get("step") or 0)
+        except (TypeError, ValueError):
+            req.step = 0
     return GenRecord(_str(data, "output"), _str(data, "source"), _str(data, "time"), req)
 
 
