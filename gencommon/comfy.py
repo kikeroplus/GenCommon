@@ -832,13 +832,91 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
             record["recipe"] = req.recipe
         if req.step:
             record["step"] = req.step
+    line = json.dumps(record, ensure_ascii=False) + "\r\n"
     try:
         with _history_lock:
             store.APP_DIR.mkdir(parents=True, exist_ok=True)
             with file_path("comfy_history.txt").open("a", encoding="utf-8", newline="") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\r\n")
+                f.write(line)
     except OSError:
         pass
+    if app.PROFILE is not None and app.PROFILE.share_history:
+        folder = _shared_history_dir()
+        if folder is not None:
+            try:
+                with _history_lock:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    with (folder / _shared_history_name(store.APP_NAME)).open("a", encoding="utf-8", newline="") as f:
+                        f.write(line)
+            except OSError:
+                pass  # 繋がらないときは書かない (この PC の記録には残っている)
+
+
+# 共有の置き場所の記録 (Profile.share_history のアプリ): (置き場所)\history\(アプリ名).(PC名).txt。
+# PC ごとに別のファイルなので、何台かで同時に書き足してもぶつからない
+SHARED_HISTORY_DIR = "history"
+_SHARED_LIST_RECHECK = 10.0  # 共有の置き場所のファイルの一覧を見直すまでの秒数 (ファイルを選ぶたびに見ないように)
+_shared_lists: dict = {}  # アプリ名 → (フォルダ, 見た時刻, ほかの PC のファイル)
+
+
+def _host() -> str:
+    return os.environ.get("COMPUTERNAME", "") or "PC"
+
+
+def _shared_history_name(app_name: str) -> str:
+    return f"{app_name}.{_host()}.txt"
+
+
+def _shared_history_dir() -> Optional[Path]:
+    """共有の置き場所の記録のフォルダ (共有の置き場所を決めていない・繋がらないときは None)。"""
+    where = store.location()
+    if where is None or not store.online():
+        return None
+    return where / SHARED_HISTORY_DIR
+
+
+def seed_shared_history() -> None:
+    """共有の置き場所に、この PC の記録のファイルがまだなければ、今までの記録を写す
+    (共有に書き始める前に作ったものも、ほかの PC から見えるように。起動したときに 1 回)。"""
+    folder = _shared_history_dir()
+    if folder is None:
+        return
+    target = folder / _shared_history_name(store.APP_NAME)
+    try:
+        with _history_lock:
+            if target.exists():
+                return
+            folder.mkdir(parents=True, exist_ok=True)
+            source = file_path("comfy_history.txt")
+            data = source.read_bytes() if source.is_file() else b""
+            temp = target.with_name(f"{target.name}.{_host()}.{os.getpid()}.tmp")
+            temp.write_bytes(data)
+            temp.replace(target)
+    except OSError:
+        pass
+
+
+def _shared_history_files(app_name: str, others_only: bool = True) -> list[Path]:
+    """そのアプリの、共有の置き場所の記録のファイル (この PC のものは、この PC の記録と同じなので除く)。"""
+    folder = _shared_history_dir()
+    if folder is None:
+        return []
+    now = time.monotonic()
+    cached = _shared_lists.get(app_name)
+    if cached is not None and cached[0] == folder and now - cached[1] < _SHARED_LIST_RECHECK:
+        files = cached[2]
+    else:
+        prefix = app_name.lower() + "."
+        try:
+            files = sorted(p for p in folder.iterdir()
+                           if p.is_file() and p.name.lower().startswith(prefix) and p.name.lower().endswith(".txt"))
+        except OSError:
+            files = []
+        _shared_lists[app_name] = (folder, now, files)
+    if others_only:
+        mine = _shared_history_name(app_name).lower()
+        files = [p for p in files if p.name.lower() != mine]
+    return files
 
 
 def find_history_by_source(source: str) -> Optional[GenRecord]:
@@ -878,9 +956,23 @@ def read_history(app_name: Optional[str] = None) -> list[GenRecord]:
     ファイルを選ぶたびに呼ばれるので、前に読んだものに書き足された分だけを足して返す。
     返した記録は書き換えないこと (読むだけの呼び出し元で共有している)。
     """
+    path, other = _history_path(app_name)
+    records = _read_history_file(path)
+    if other:
+        # 別の PC で作った記録 (共有の置き場所に PC ごとに書いたもの)。同じ出来たファイルは、この PC の記録を使う
+        extra = [r for f in _shared_history_files(app_name) for r in _read_history_file(f)]
+        if extra:
+            seen = {os.path.normcase(r.output) for r in records if r.output}
+            more = [r for r in extra if not r.output or os.path.normcase(r.output) not in seen]
+            if more:
+                records = sorted(records + more, key=lambda r: r.time)  # 時刻は「年-月-日 時:分:秒」で並ぶ
+    return records
+
+
+def _read_history_file(path: Path) -> list[GenRecord]:
+    """記録のファイル 1 つ (古い順)。前に読んだところから先だけを読む。"""
     try:
         with _history_lock:
-            path, _other = _history_path(app_name)
             cache_key = str(path)
             try:
                 stat = path.stat()
@@ -933,10 +1025,18 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
             return None
         return table.get(os.path.normcase(os.path.abspath(value)))
 
+    path, other = _history_path(app_name)
+    changed = _rename_in_file(path, mapped)
+    if other:  # 別の PC で作った記録も (入口のテキストの名前を変えたとき、どの PC で作ったものも付け替える)
+        for f in _shared_history_files(app_name):
+            changed += _rename_in_file(f, mapped)
+    return changed
+
+
+def _rename_in_file(path: Path, mapped) -> int:
     changed = 0
     try:
         with _history_lock:
-            path, _other = _history_path(app_name)
             if not path.is_file():
                 return 0
             lines = path.read_text(encoding="utf-8-sig").splitlines()
@@ -959,7 +1059,7 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
                         line = json.dumps(data, ensure_ascii=False)
                 out.append(line)
             if changed:
-                temp = path.with_name(path.name + ".tmp")
+                temp = path.with_name(f"{path.name}.{_host()}.{os.getpid()}.tmp")  # 共有の置き場所でもぶつからない
                 temp.write_text("".join(x + "\r\n" for x in out), encoding="utf-8", newline="")
                 temp.replace(path)
                 _history_caches.pop(str(path), None)  # 書き換えたので、次は読み直す

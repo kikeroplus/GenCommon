@@ -37,6 +37,9 @@ class Profile:
     open_result_label: str = "生成が終わったら、出来たファイルを開く (まとめて生成のときは開きません)"
     open_on_done: bool = False  # 1 件の生成が終わったら、出来たファイルを関連付けアプリで開く (オプションがオンのとき)
     skip_empty: bool = False  # プロンプトが空のものは生成しない (まとめてでは除き、1 件では押せなくする)
+    # 生成の記録を、共有の置き場所 (shared_dir.txt) にも PC ごとに書く (別の PC のほかのアプリが結果を探せるように。
+    # PrismLab。2026-11-18 利用者の希望: PC1 の PrismLab の結果を PC2 の PromptWordCrafter に出す)
+    share_history: bool = False
     colors: Colors = field(default_factory=Colors)
 
 
@@ -47,7 +50,11 @@ def setup(profile: Profile, extra_llm: Optional[dict[str, str]] = None) -> list[
     """アプリの起動時に呼ぶ。設定の置き場所を決め、初めてなら共有に移す。戻り値は知らせる文。"""
     global PROFILE
     PROFILE = profile
-    return store.start(profile.name, extra_llm)
+    notes = store.start(profile.name, extra_llm)
+    if profile.share_history:
+        from . import comfy  # comfy が app を読むので、ここで読む
+        comfy.seed_shared_history()
+    return notes
 
 
 def profile() -> Profile:
