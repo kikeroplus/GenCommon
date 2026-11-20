@@ -2147,6 +2147,8 @@ class GenInfoDialog(QDialog):
             when = "盛る前に入れました" if item.get("before") else "そのまま付けました"
             if req.enhancer is None:
                 when = "付けました"
+            if item.get("front"):
+                when += " (前に足しました)"
             layout.addWidget(QLabel(
                 f"差し込み「{item.get('name', '')}」 ({item.get('file', '')}。{item.get('folder', '')} から。{when})"))
             text = QPlainTextEdit(str(item.get("text") or ""))

@@ -8,6 +8,7 @@
 
 ジョブ・記録に持たせる形 (GenRequest.inserts): 使った枠ごとに
   {"slot": 番号, "name": 名前, "folder": フォルダ, "before": 盛る前か, "file": ファイル名, "text": 中身}
+  (PrismLab の追加テキスト・差し込みは "front": True で、それまでの文の前に足す。ない・False なら後ろ)
 生成の画面の欄の形 (前回の値・セット・入力中の内容): 枠ごとに
   {"slot": 番号, "name": 名前, "folder": フォルダ, "before": 盛る前か, "use": 使うか}
 """
@@ -310,6 +311,17 @@ class Picker:
 def texts(items: Optional[list], before: bool) -> list[str]:
     return [str(d.get("text") or "") for d in (items or [])
             if isinstance(d, dict) and bool(d.get("before")) == before]
+
+
+def wrap(core: Optional[str], items: Optional[list], before: bool) -> str:
+    """core に、盛る前 (before=True) か盛ったあとの足す文を並び順に足す。
+    "front" の付いたものはそれまでの文の前に、ほかは後ろに付ける (前のものほど core の近くに残る)。"""
+    result = core or ""
+    for d in items or []:
+        if isinstance(d, dict) and bool(d.get("before")) == before:
+            text = str(d.get("text") or "")
+            result = join(text, result) if d.get("front") else join(result, text)
+    return result
 
 
 def join(*parts: Optional[str]) -> str:

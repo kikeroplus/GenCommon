@@ -189,10 +189,10 @@ class GenRequest:
 
     @property
     def source_prompt(self) -> Optional[str]:
-        """エンハンサーに渡す文: 元のプロンプト + 盛る前に入れる差し込み (改行でつなぐ)。"""
+        """エンハンサーに渡す文: 元のプロンプト + 盛る前に入れる差し込み (改行でつなぐ。"front" のものは前に)。"""
         if self.prompt is None:
             return None
-        return inserts.join(self.prompt, *inserts.texts(self.inserts, True))
+        return inserts.wrap(self.prompt, self.inserts, True)
 
     @property
     def full_prompt(self) -> Optional[str]:
@@ -200,7 +200,7 @@ class GenRequest:
         if self.prompt is None:
             return None
         p = self.source_prompt if self.enhanced_prompt is None else self.enhanced_prompt
-        return inserts.join(p, *inserts.texts(self.inserts, False), self.base_prompt)
+        return inserts.join(inserts.wrap(p, self.inserts, False), self.base_prompt)
 
     def copy(self, **changes) -> "GenRequest":
         data = dict(self.__dict__)
