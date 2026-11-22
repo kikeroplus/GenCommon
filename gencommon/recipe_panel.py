@@ -6,10 +6,11 @@ PromptWordCrafter・MuseFactory で共通 (recipe_link.py。PrismLab の docs\\s
 
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QDialog, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea,
+from PySide6.QtGui import QCursor
+from PySide6.QtWidgets import (QApplication, QDialog, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget)
 
 from . import app, machines, recipe_link
@@ -109,8 +110,15 @@ class RecipePanel(QGroupBox):
             self.buttons_row.addWidget(button)
         self.buttons_row.addStretch(1)
 
-    def start(self, recipe: recipe_link.PublishedRecipe, files: Optional[list[Path]] = None) -> None:
-        """レシピで生成する (ボタン・右クリックのメニューから)。"""
+    def start(self, recipe: recipe_link.PublishedRecipe, files=None) -> None:
+        """レシピで生成する (ボタン・右クリックのメニューから)。files はファイルの並びか、それを返す関数
+        (フォルダのサブフォルダまで数えるときなど、選んだときに数える)。None なら今選んでいるもの。"""
+        if callable(files):
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                files = files()
+            finally:
+                QApplication.restoreOverrideCursor()
         files = list(files if files is not None else self.files())
         if not files:
             self.status.emit("生成するテキストファイルを選んでください。")
@@ -132,18 +140,34 @@ class RecipePanel(QGroupBox):
     def recipes(self) -> list[recipe_link.PublishedRecipe]:
         return list(self._recipes)
 
-    def recipe_menu(self, menu: QMenu, files: list[Path]) -> None:
-        """右クリックのメニューに「PrismLab のレシピで生成 ▸」を足す。"""
-        sub = QMenu("PrismLab のレシピで生成", menu)  # 親を付けて作る (addMenu("名前") のものは関数を抜けると消える)
+    def recipe_menu(self, menu: QMenu, files, title: str = "PrismLab のレシピで生成") -> QMenu:
+        """右クリックのメニューに「PrismLab のレシピで生成 ▸」を足す。files はファイルの並びか、それを返す関数。"""
+        sub = QMenu(title, menu)  # 親を付けて作る (addMenu("名前") のものは関数を抜けると消える)
         menu.addMenu(sub)
+        self._fill_menu(sub, files)
+        return sub
+
+    def _fill_menu(self, sub: QMenu, files) -> None:
         if not self._recipes:
-            sub.addAction("(出してもらったレシピがありません)").setEnabled(False)
+            sub.addAction("(出してもらったレシピがありません。PrismLab の「ほかのアプリに出す」)").setEnabled(False)
         for r in self._recipes:
             action = sub.addAction(r.name or "(名前なし)")
             action.setToolTip(r.problem or r.flow)
-            action.setEnabled(not r.problem and bool(files))
+            action.setEnabled(not r.problem and (callable(files) or bool(files)))
             action.triggered.connect(lambda _c=False, rr=r: self.start(rr, files))
         sub.setToolTipsVisible(True)
+
+    def choose_and_start(self, files: list[Path], parent=None) -> None:
+        """レシピを選ぶメニューをマウスの位置に出し、選んだレシピで生成する (作業タブの「保存して生成する...」)。"""
+        if not files:
+            return
+        self.poll()
+        menu = QMenu(parent or self)
+        title = menu.addAction(f"{files[0].name if len(files) == 1 else f'{len(files)} 件'} を、どのレシピで生成しますか")
+        title.setEnabled(False)
+        menu.addSeparator()
+        self._fill_menu(menu, files)
+        menu.exec(QCursor.pos())
 
     # ------------------------------------------------------------------
     def poll(self) -> None:
