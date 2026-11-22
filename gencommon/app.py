@@ -40,6 +40,12 @@ class Profile:
     # 生成の記録を、共有の置き場所 (shared_dir.txt) にも PC ごとに書く (別の PC のほかのアプリが結果を探せるように。
     # PrismLab。2026-11-18 利用者の希望: PC1 の PrismLab の結果を PC2 の PromptWordCrafter に出す)
     share_history: bool = False
+    # 生成の画面の接続先に「振り分け」を出し、ジョブを「台の設定...」で選んだ台 (最大 3 台) の空いている台に回す
+    # (machines.py。PrismLab の振り分けと同じ考え。2026-11-22 利用者の希望: PromptWordCrafter・MuseFactory)
+    machines: bool = False
+    # 「生成時の設定」に「この設定で生成する...」を出す (2026-11-22 利用者: PWC・MuseFactory では使わないので出さない。
+    # 生成の設定は PrismLab のレシピに寄せる)
+    regenerate: bool = True
     colors: Colors = field(default_factory=Colors)
 
 

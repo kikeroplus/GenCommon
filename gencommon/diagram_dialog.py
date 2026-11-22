@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from . import comfy, enhancer, inserts, reader, set_cards, settings
-from .comfy_dialogs import GenerateDialog, _c, _hint, _one_line, _parse_seconds
+from .comfy_dialogs import MACHINES_INDEX, GenerateDialog, _c, _hint, _one_line, _parse_seconds
 
 
 class _Bridge(QObject):
@@ -237,6 +237,7 @@ class DiagramGenerateDialog(GenerateDialog):
         box = self._group("接続先 (共有)", COMFY_LINE)
         row = QHBoxLayout()
         row.addWidget(self.conn_box, 1)
+        row.addWidget(self.machines_button)
         row.addWidget(self._tab_button("接続先", "接続先 (ComfyUI の URL) の登録・接続テスト"))
         box.layout().addLayout(row)
         if not self.settings_only:  # 回数は生成のたびに決めるもの (覚えない)
@@ -411,9 +412,7 @@ class DiagramGenerateDialog(GenerateDialog):
         if not self.settings_only:
             super()._accept()
             return
-        sel = max(self.conn_box.currentIndex(), 0)
-        if self._conn_index[sel] >= 0:
-            comfy.set_active_connection(self._conn_index[sel])
+        self._save_connection(max(self.conn_box.currentIndex(), 0))
         wf = self.wf_box.currentIndex()
         if wf >= 0:
             comfy.set_active_workflow(self._wf_index[wf])
@@ -526,6 +525,10 @@ class DiagramGenerateDialog(GenerateDialog):
     # --- 段の状態と、右の確認 ------------------------------------------
     def _select(self, key: str):
         self._selected = key
+        self._refresh()
+
+    def machines_changed(self):
+        self._refresh_sets()
         self._refresh()
 
     def _refresh(self, *_args):
@@ -697,6 +700,7 @@ class DiagramGenerateDialog(GenerateDialog):
         sel = max(self.conn_box.currentIndex(), 0)
         wf = self.wf_box.currentIndex()
         lines = [
+            f"接続先: {self.conn_box.itemText(sel)}" if self._conn_index[sel] == MACHINES_INDEX else
             f"接続先: {self._conn_name[sel] + '  ' if self._conn_name[sel] else ''}{self._conn_url[sel]}",
             f"ワークフロー: {self._wf_name[wf] if wf >= 0 else '(なし)'}",
         ]

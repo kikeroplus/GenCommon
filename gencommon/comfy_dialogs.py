@@ -35,7 +35,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import app, bulk_edit, comfy, enhancer, inserts, reader, store
+from . import app, bulk_edit, comfy, enhancer, inserts, machines, reader, store
+
+MACHINES_INDEX = -2  # 生成の画面の接続先で「振り分け」の行 (接続先の番号の代わり)
 
 
 def _c() -> app.Colors:
@@ -1081,7 +1083,23 @@ class GenerateDialog(QDialog):
             self._conn_name.append("")
         if self.conn_box.currentIndex() < 0:
             self.conn_box.setCurrentIndex(0)
-        form.addRow("接続先", self.conn_box)
+        # 振り分け (machines.py): 先頭に「振り分け (台: A · B)」を足す。選ぶと、ジョブは空いている台に回す
+        self.machines_button = QPushButton("台の設定...")
+        self.machines_button.setToolTip("「振り分け」で使う ComfyUI の台を 3 台まで選びます (休みの切り替えも)")
+        self.machines_button.setAutoDefault(False)
+        self.machines_button.setVisible(pf.machines)
+        self.machines_button.clicked.connect(self._edit_machines)
+        if pf.machines:
+            self.conn_box.insertItem(0, machines.summary())
+            self._conn_index.insert(0, MACHINES_INDEX)
+            self._conn_url.insert(0, machines.MACHINES_URL)
+            self._conn_name.insert(0, machines.LABEL)
+            if machines.load_use():
+                self.conn_box.setCurrentIndex(0)
+        conn_row = QHBoxLayout()
+        conn_row.addWidget(self.conn_box, 1)
+        conn_row.addWidget(self.machines_button)
+        form.addRow("接続先", conn_row)
 
         # ワークフロー (置いてあるフォルダで、どの台用かを見分けて名前の後ろに出す)
         self._all_conns = comfy.connections()
@@ -1357,23 +1375,67 @@ class GenerateDialog(QDialog):
         current = self.conn_box.currentIndex()
         if not urls or (0 <= current < len(self._conn_url) and comfy._url_key(self._conn_url[current]) in urls):
             return
+        if (0 <= current < len(self._conn_url) and machines.is_machines(self._conn_url[current])
+                and any(comfy._url_key(u) in urls for u in machines.machines())):
+            return  # 振り分けのまま (その台が振り分ける台にあれば、その台にだけ送る)
         for i, url in enumerate(self._conn_url):
             if comfy._url_key(url) in urls:
                 self.conn_box.setCurrentIndex(i)
                 return
 
     def machine_conflict(self, url: str, path: str) -> str:
+        if machines.is_machines(url):
+            # 振り分け: 台用のワークフローは、その台が振り分ける台にあれば合っている
+            own = comfy.workflow_machines(path, self._all_conns, self._folders)
+            if not own or any(comfy._url_key(c.value) == comfy._url_key(u) for c in own for u in machines.machines()):
+                return ""
+            return comfy.machine_name(path, self._all_conns, self._folders)
         return comfy.machine_conflict(url, path, self._all_conns, self._folders)
 
     def _update_machine_hint(self):
         wf, conn = self.wf_box.currentIndex(), self.conn_box.currentIndex()
-        machine = ""
+        text = ""
         if 0 <= wf < len(self._wf_path) and 0 <= conn < len(self._conn_url):
-            machine = self.machine_conflict(self._conn_url[conn], self._wf_path[wf])
-        self.machine_hint.setText(
-            f"⚠ このワークフローは {machine} 用です。接続先の台と違います"
-            if machine else "")
-        self.machine_hint.setVisible(bool(machine))
+            if machines.is_machines(self._conn_url[conn]):
+                text = self._machines_note(self._wf_path[wf])
+            else:
+                machine = self.machine_conflict(self._conn_url[conn], self._wf_path[wf])
+                text = f"⚠ このワークフローは {machine} 用です。接続先の台と違います" if machine else ""
+        self.machine_hint.setText(text)
+        self.machine_hint.setVisible(bool(text))
+
+    def _machines_note(self, path: str) -> str:
+        """「振り分け」を選んでいるときの注意 (台がない・台用のワークフロー)。"""
+        reason = machines.no_machines_reason()
+        if reason:
+            return "⚠ " + reason
+        own = comfy.workflow_machines(path, self._all_conns, self._folders)
+        if not own:
+            return ""
+        name = comfy.machine_name(path, self._all_conns, self._folders)
+        if any(comfy._url_key(c.value) == comfy._url_key(u) for c in own for u in machines.machines()):
+            return f"このワークフローは {name} 用なので、振り分けでも {name} にだけ送ります"
+        return f"⚠ このワークフローは {name} 用で、振り分ける台にありません。{name} に送ります"
+
+    def _edit_machines(self):
+        """「台の設定...」: 台を選び直したら、接続先の「振り分け (台: …)」の文字と注意を直す。"""
+        if machines.MachinesDialog(self).exec() != QDialog.DialogCode.Accepted:
+            return
+        for i, index in enumerate(self._conn_index):
+            if index == MACHINES_INDEX:
+                self.conn_box.setItemText(i, machines.summary())
+        self._update_machine_hint()
+        self.machines_changed()
+
+    def machines_changed(self):
+        """台を選び直した (図の画面が描き直す)。"""
+
+    def _save_connection(self, sel: int):
+        """選んだ接続先を前回の値として覚える (「振り分け」を選んだかはアプリごとに覚える)。"""
+        if self.profile.machines:
+            machines.save_use(self._conn_index[sel] == MACHINES_INDEX)
+        if self._conn_index[sel] >= 0:
+            comfy.set_active_connection(self._conn_index[sel])
 
     def _apply(self, url: str, workflow: str, seconds: str):
         """接続先・ワークフローは一覧にあるものだけ選び直す。"""
@@ -1838,8 +1900,12 @@ class GenerateDialog(QDialog):
         sel = max(self.conn_box.currentIndex(), 0)
         request.url = self._conn_url[sel]
         request.connection_name = self._conn_name[sel]
-        if self._conn_index[sel] >= 0:
-            comfy.set_active_connection(self._conn_index[sel])
+        if self._conn_index[sel] == MACHINES_INDEX:
+            reason = machines.no_machines_reason()
+            if reason:
+                QMessageBox.warning(self, self.windowTitle(), reason)
+                return
+        self._save_connection(sel)
         wf = self.wf_box.currentIndex()
         request.workflow_path = self._wf_path[wf]
         request.workflow_name = self._wf_name[wf]
@@ -1885,6 +1951,13 @@ def _parse_seconds(text: str) -> Optional[float]:
 # ----------------------------------------------------------------------
 # 生成ジョブの一覧 (閉じてもジョブは続く)
 # ----------------------------------------------------------------------
+def _running_name(job) -> str:
+    """ジョブ一覧の「実行中:」に出す名前 (振り分けたジョブは台の名前も)。"""
+    if getattr(job, "machines", False) and job.request.connection_name:
+        return f"{job.file_name}  [{job.request.connection_name}]"
+    return job.file_name
+
+
 def _clock(stamp: Optional[float]) -> str:
     """時刻 (time.time) を短く。今日なら時:分:秒、ほかの日なら月/日も付ける。"""
     if not stamp:
@@ -1923,6 +1996,12 @@ class JobWindow(QWidget):
         self.running_label = QLabel()
         self.running_label.setWordWrap(True)
         layout.addWidget(self.running_label)
+        # 振り分けの台の状態 (振り分けるジョブがあるときだけ)
+        self.machine_label = QLabel()
+        self.machine_label.setWordWrap(True)
+        self.machine_label.setStyleSheet(f"color: {_c().hint};")
+        self.machine_label.hide()
+        layout.addWidget(self.machine_label)
         self.tree = QTreeWidget()
         self.tree.setRootIsDecorated(False)
         self.tree.setHeaderLabels(self.COLUMNS)
@@ -1948,6 +2027,11 @@ class JobWindow(QWidget):
                        self.show_button, self.clear_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
+        if pf.machines:
+            machines_button = QPushButton("台の設定...")
+            machines_button.setToolTip("「振り分け」で使う ComfyUI の台を選び直します (休みの切り替え・外した台を戻す)")
+            machines_button.clicked.connect(lambda: manager.edit_machines(self))
+            buttons.addWidget(machines_button)
         close = QPushButton("閉じる")
         buttons.addWidget(close)
         layout.addLayout(buttons)
@@ -2009,7 +2093,7 @@ class JobWindow(QWidget):
         running = [j for j in jobs if j.is_running]
         waiting = sum(1 for j in jobs if j.is_active and not j.is_running)
         if self.manager.paused:
-            lines = [f"実行中: {j.file_name}  {j.status}" for j in running]
+            lines = [f"実行中: {_running_name(j)}  {j.status}" for j in running]
             if running:
                 lines.append(f"一時停止中: 実行中のものが終わったら止まります (待機 {waiting} 件)")
             else:
@@ -2017,7 +2101,7 @@ class JobWindow(QWidget):
             self.running_label.setText("\n".join(lines))
             self.running_label.setStyleSheet(f"color: {_c().paused}; font-weight: bold;")
         elif running:
-            lines = [f"実行中: {j.file_name}  {j.status}" for j in running]
+            lines = [f"実行中: {_running_name(j)}  {j.status}" for j in running]
             if waiting:
                 lines.append(f"待機 {waiting} 件")
             self.running_label.setText("\n".join(lines))
@@ -2025,6 +2109,9 @@ class JobWindow(QWidget):
         else:
             self.running_label.setText("実行中のジョブはありません")
             self.running_label.setStyleSheet(f"color: {_c().hint};")
+        machine_text = self.manager.machine_lines()
+        self.machine_label.setText(machine_text)
+        self.machine_label.setVisible(bool(machine_text))
         self.update_buttons()
 
     def update_buttons(self):
@@ -2112,6 +2199,11 @@ class GenInfoDialog(QDialog):
 
         row("生成した日時", record.time)
         pf = app.profile()
+        if req.recipe:
+            # PrismLab のレシピで出来たもの (ほかのアプリから頼んだものも)
+            row("レシピ", req.recipe + (f"  ({req.step} 番目のステップ)" if req.step else ""))
+            if req.origin and req.origin != record.source:
+                row("入口", req.origin)
         row(pf.column, record.source + ("" if has_source else "  (見つかりません)"))
         row("出来たファイル", record.output)
         row("接続先", f"{req.connection_name}  ({req.url})" if req.connection_name else req.url)
@@ -2180,6 +2272,7 @@ class GenInfoDialog(QDialog):
         close = QPushButton("閉じる")
         close.setDefault(True)
         close.clicked.connect(self.reject)
+        again.setVisible(pf.regenerate)
         bottom.addWidget(again)
         bottom.addWidget(close)
         layout.addLayout(bottom)

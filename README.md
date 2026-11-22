@@ -15,7 +15,9 @@ J-Rate (C#) は言語が違うので部品は使いませんが、同じ決ま�
 | `app.py` | アプリごとの違い (`Profile`: 呼び名、出力の置き場所、読み取りの有無、配色) |
 | `settings.py` | LLM の接続 (サーバーURL・モデル・送る画像の大きさ。共有) |
 | `comfy.py` | プリセット・セット・記録・エクスポート / インポート・ワークフローの書き換え・ComfyUI とのやりとり |
-| `generation.py` | 生成ジョブ (同時 2 件、続きから始める、一時停止、読み取り → 盛る → ComfyUI) |
+| `generation.py` | 生成ジョブ (同時 2 件、続きから始める、一時停止、読み取り → 盛る → ComfyUI、台に振り分ける) |
+| `machines.py` | 台の設定 (アプリごとに最大 3 台・休み) と「台の設定」の画面。`Profile.machines` のアプリ (PromptWordCrafter・MuseFactory) だけ |
+| `recipe_link.py` / `recipe_panel.py` | PrismLab のレシピで生成する: 出してもらったレシピを読む・PrismLab に頼む (裏で起動)・進み具合を読む・止める / 「生成 (PrismLab のレシピ)」の段 (PrismLab `docs\spec.md` 6 章) |
 | `comfy_dialogs.py` | 生成の設定・生成する・生成ジョブ・生成時の設定の画面 |
 | `bulk_edit.py` | 「まとめて編集...」の画面 (まとめて削除・並べ替え・名前順・空きを詰める) と、結果を一覧に当てはめる `apply` |
 | `diagram_dialog.py` | 生成する: 図の画面 (左に設定・真ん中に処理・右に送る前の確認。`docs/relations-columns.html` の並び) |

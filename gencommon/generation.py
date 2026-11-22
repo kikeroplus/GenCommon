@@ -8,6 +8,10 @@ AI で盛る (エンハンサーを選んだとき) → ComfyUI の順に進む�
 登録するときにジョブ 1 件ごとに割り当てておく。同じ元画像の回数ぶんのジョブは、
 最初の 1 件だけが読み取り、残りはそれを待って同じ説明を使う。
 
+接続先で「振り分け」を選んだジョブ (machines.py) は、番が来たときに「台の設定」の台のうち空いている台に回す
+(PrismLab の振り分けと同じ考え。1 台に同時に 2 件まで・使っている数の少ない台が先・同じワークフローを同じ台に寄せる・
+繋がらない台は 30 秒ごとに確かめる・続けて 3 件失敗した台は外す・休みの台には送らない)。
+
 終わっていないジョブは %APPDATA%/(アプリ名)/comfy_jobs.json に書いておき、
 「残して閉じる」で閉じたときや PC が落ちたときは、次に起動したときに続きから始められる。
 PromptWordCrafter と ImageMimicArt で共通。アプリごとの違いは app.Profile で切り替える。
@@ -18,19 +22,32 @@ import json
 import os
 import threading
 import time
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
-from . import app, comfy, enhancer, inserts, llm, reader
+from . import app, comfy, enhancer, inserts, llm, machines, reader
 from .comfy_dialogs import ComfySettingsDialog, GenerateDialog, GenInfoDialog, JobWindow
 from .diagram_dialog import DiagramGenerateDialog
 
 MAX_RUNNING_JOBS = 2  # 同じ接続先に同時に依頼する件数
 CONFIRM_JOB_COUNT = 30  # これを超える件数を登録するときは確かめる
 PROGRESS_REFRESH_MS = 300  # 進み具合でジョブ一覧を描き直すのは、この間隔に 1 回まで (ジョブが多くても重くしない)
+
+# 振り分け (PrismLab の engine と同じ値)
+FAIL_LIMIT = 3  # ある台でだけ、これだけ続けて失敗したら、その台を外す (台の設定を開き直すと戻す)
+DOWN_RECHECK = 30.0  # 繋がらない台を確かめ直す間隔 (秒)
+MACHINE_TICK_MS = 5000  # 繋がらない台・台の設定の変わり目を見回る間隔
+# 同じワークフローを同じ台に寄せる (ComfyUI がモデルを読み直す回数を減らす)。台が空いたら、待っている先頭から
+# AFFINITY_LOOKAHEAD 件のうち、その台が最後に動かしたワークフローと同じものを先に取る。先頭の件は
+# AFFINITY_MAX_SKIPS 回まで後回しにしたら、次は必ず取る
+AFFINITY_LOOKAHEAD = 6
+AFFINITY_MAX_SKIPS = 3
+UP, DOWN, OFF = "up", "down", "off"
 
 WAITING, RUNNING, DONE, FAILED, CANCELED = range(5)
 STATE_TEXT = {WAITING: "待機中", RUNNING: "実行中", DONE: "完了", FAILED: "失敗", CANCELED: "キャンセル"}
@@ -59,6 +76,12 @@ class GenJob:
         self.finished_at: Optional[float] = None  # 終わった時刻 (完了・失敗・キャンセル。ジョブ一覧の「生成時刻」)
         self.run_time: Optional[float] = None  # 生成にかかった秒数 (完了したときに決まる)
         self.reading = False  # 読み取っている最中 (同じ元画像のほかのジョブを待たせる)
+        # 振り分けるジョブ。台が決まるまで request.url は machines.MACHINES_URL、決まったらその台の URL
+        # (ComfyUI に頼んだら prompt_id とセットでその台に残る)
+        self.machines = machines.is_machines(request.url)
+        self.skips = 0  # 同じワークフローを寄せるために後回しにした回数
+        self.at_comfy = False  # ComfyUI とのやりとりに入った (台のせいの失敗かを見分ける)
+        self.unreachable = False  # 失敗したあと、その台に繋がらなかった
 
     @property
     def file_name(self) -> str:
@@ -82,6 +105,34 @@ class GenJob:
     def same_image(self, other: "GenJob") -> bool:
         return self.group == other.group and _key(self.source) == _key(other.source)
 
+    @property
+    def assigned(self) -> bool:
+        """振り分けるジョブで、台が決まっている。"""
+        return self.machines and not machines.is_machines(self.request.url)
+
+    def unassign(self):
+        """台を外して、空いている台に回し直す。"""
+        self.request = self.request.copy(url=machines.MACHINES_URL, connection_name=machines.LABEL)
+        self.prompt_id = ""
+
+
+@dataclass
+class Machine:
+    """振り分けの台 1 つの状態 (画面のスレッドだけが触る)。"""
+
+    url: str
+    name: str = ""
+    state: str = UP
+    reason: str = ""
+    done: int = 0
+    fail_streak: int = 0
+    last_check: float = 0.0
+    checking: bool = False
+
+    @property
+    def key(self) -> str:
+        return comfy._url_key(self.url)
+
 
 def _key(path) -> str:
     return os.path.normcase(os.path.abspath(str(path)))
@@ -95,6 +146,7 @@ class _Signals(QObject):
     caption_read = Signal(object, str)  # job, 読み取った説明プロンプト
     enhanced = Signal(object)  # job (盛ったプロンプトが決まった)
     finished = Signal(object, object, object)  # job, outputs, error
+    checked = Signal(object, bool)  # 繋がらない台 (Machine) を確かめた結果
 
 
 class GenerationController(QObject):
@@ -133,6 +185,16 @@ class GenerationController(QObject):
         # 一時停止中は新しく ComfyUI に依頼しない (依頼済みのものは最後まで生成して受け取る)。
         # 終わっていないジョブがなくなったら解く
         self.paused = False
+        # 振り分け: 台の URL の小文字 → Machine。台ごとに最後に送ったワークフロー
+        self.machine_states: dict[str, Machine] = {}
+        self._machine_conf = None  # 最後に読んだ台の設定 (変わったら読み直す)
+        self._pool: list[Machine] = []  # 使う台 (休みを除く。設定の順)
+        self._last_wf: dict[str, str] = {}
+        if app.profile().machines:
+            self._signals.checked.connect(self._on_checked, Qt.ConnectionType.QueuedConnection)
+            self._machine_timer = QTimer(self)
+            self._machine_timer.timeout.connect(self._machine_tick)
+            self._machine_timer.start(MACHINE_TICK_MS)
 
     # ------------------------------------------------------------------
     # 状態
@@ -354,6 +416,12 @@ class GenerationController(QObject):
             request.enhancer = enhancer.snapshot(dialog.enhancer_preset)
         if p.reads and dialog.reader_preset is not None:
             request.reader = reader.snapshot(dialog.reader_preset)
+        if machines.is_machines(request.url):
+            # 台用のワークフローで、その台が振り分ける台にないときは、その台にだけ送る (いつもの接続先と同じ)
+            own = comfy.workflow_machines(request.workflow_path)
+            pool = {comfy._url_key(u) for u in machines.machines()}
+            if own and not any(comfy._url_key(c.value) in pool for c in own):
+                request.url, request.connection_name = own[0].value, own[0].name
 
         total = len(captions) * repeat
         if total > CONFIRM_JOB_COUNT and QMessageBox.question(
@@ -399,18 +467,160 @@ class GenerationController(QObject):
         if message:
             self.show_status(message + self.job_counts())
 
+    def _can_start(self, job: GenJob) -> bool:
+        if self.paused and (not job.prompt_id or job.held):
+            return False  # 一時停止中は新しく依頼しない (依頼済みのものは結果を受け取る)
+        if job.need_read and any(j.reading and j.same_image(job) for j in self.jobs):
+            return False  # 同じ元画像を読み取っている最中: その結果を待つ
+        return True
+
     def _start_jobs(self):
-        """待機中のジョブを、接続先ごとに MAX_RUNNING_JOBS 件まで実行に移す。"""
-        for job in [j for j in self.jobs if j.state == WAITING]:
-            if self.paused and (not job.prompt_id or job.held):
-                continue  # 一時停止中は新しく依頼しない (依頼済みのものは結果を受け取る)
-            if job.need_read and any(j.reading and j.same_image(job) for j in self.jobs):
-                continue  # 同じ元画像を読み取っている最中: その結果を待つ
-            url = job.request.url
-            if sum(1 for j in self.jobs if j.state == RUNNING and j.request.url == url) >= MAX_RUNNING_JOBS:
+        """待機中のジョブを、接続先ごとに MAX_RUNNING_JOBS 件まで実行に移す。
+        振り分けるジョブは、空いている台 (使っている数の少ない台が先) に回す。"""
+        running = Counter(comfy._url_key(j.request.url) for j in self.jobs if j.state == RUNNING)
+        for job in [j for j in self.jobs if j.state == WAITING and not j.machines]:
+            key = comfy._url_key(job.request.url)
+            if not self._can_start(job) or running[key] >= MAX_RUNNING_JOBS:
                 continue
+            running[key] += 1
             self._run(job)
+        if any(j.machines and j.state == WAITING for j in self.jobs):
+            self._start_machine_jobs(running)
         self._changed()
+
+    # ------------------------------------------------------------------
+    # 振り分け
+    # ------------------------------------------------------------------
+    def _refresh_machines(self) -> list[Machine]:
+        """台の設定を読み直す (変わったときだけ作り直す)。戻り値は使う台 (休みを除く)。"""
+        conf = (tuple(machines.all_machines()), frozenset(machines.machines_off()), machines.EDITS[0])
+        if conf != self._machine_conf:
+            edited = self._machine_conf is not None and conf[2] != self._machine_conf[2]
+            self._machine_conf = conf
+            pool = []
+            for url in conf[0]:
+                key = comfy._url_key(url)
+                m = self.machine_states.get(key) or Machine(url)
+                m.name = machines.name_of(url)
+                if edited and m.state == OFF:  # 台の設定を開き直したら、外した台も戻す
+                    m.state, m.reason, m.fail_streak = UP, "", 0
+                self.machine_states[key] = m
+                if url.lower() not in conf[1]:
+                    pool.append(m)
+            self._pool = pool
+        return self._pool
+
+    def _start_machine_jobs(self, running: Counter):
+        pool = self._refresh_machines()
+        usable = {m.key for m in pool if m.state != OFF}
+        drop = []
+        for job in self.jobs:
+            if job.state == WAITING and job.assigned and comfy._url_key(job.request.url) not in usable:
+                # 頼み済みの台を外した・休みにした: その台の待ち行列から外して、ほかの台で頼み直す
+                if job.prompt_id:
+                    drop.append((job.request.url, job.prompt_id))
+                job.unassign()
+        if drop:
+            threading.Thread(target=_cancel_prompts, args=(drop,), daemon=True).start()
+        conns, folders = comfy.connections(), comfy.connection_folders()
+        allowed: dict[str, set] = {}  # ワークフロー → 送ってよい台 (空 = どの台でも)
+
+        def fits(job: GenJob, m: Machine) -> bool:
+            path = job.request.workflow_path
+            if path not in allowed:
+                allowed[path] = {comfy._url_key(c.value) for c in comfy.workflow_machines(path, conns, folders)}
+            return not allowed[path] or m.key in allowed[path]
+
+        while True:
+            free = [m for m in pool if m.state == UP and running[m.key] < MAX_RUNNING_JOBS]
+            free.sort(key=lambda m: running[m.key])  # 使っている数の少ない台が先 (同じなら設定の順)
+            for m in free:
+                job = self._pick(m, fits)
+                if job is not None:
+                    break
+            else:
+                return
+            if not job.assigned:
+                job.request = job.request.copy(url=m.url, connection_name=m.name)
+            self._last_wf[m.key] = _wf_key(job)
+            running[m.key] += 1
+            self._run(job)
+
+    def _pick(self, m: Machine, fits) -> Optional[GenJob]:
+        """その台で次にやるジョブ。頼み済みで、その台の続きを待つものが先。
+        次に、その台が最後に動かしたワークフローと同じものを少しだけ先にする。"""
+        candidates = []
+        for job in self.jobs:
+            if job.state != WAITING or not job.machines or not self._can_start(job):
+                continue
+            if job.assigned:
+                if comfy._url_key(job.request.url) == m.key:
+                    return job
+                continue
+            if fits(job, m) and len(candidates) < AFFINITY_LOOKAHEAD:
+                candidates.append(job)
+        if not candidates:
+            return None
+        first = candidates[0]
+        last = self._last_wf.get(m.key)
+        if last and first.skips < AFFINITY_MAX_SKIPS:
+            for job in candidates:
+                if _wf_key(job) == last:
+                    if job is not first:
+                        first.skips += 1
+                    return job
+        return first
+
+    def _machine_tick(self):
+        """繋がらない台を 30 秒ごとに確かめる。台の設定が変わっていたら、待っているジョブを回し直す。"""
+        if not any(j.machines and j.is_active for j in self.jobs):
+            return
+        conf = self._machine_conf
+        self._refresh_machines()
+        now = time.time()
+        signals = self._signals
+        for m in self._pool:
+            if m.state == DOWN and not m.checking and now - m.last_check >= DOWN_RECHECK:
+                m.checking = True
+                threading.Thread(target=lambda m=m: signals.checked.emit(m, comfy.test_connection(m.url) is None),
+                                 daemon=True).start()
+        if conf != self._machine_conf:
+            self._start_jobs()
+
+    def _on_checked(self, m: Machine, ok: bool):
+        m.checking = False
+        m.last_check = time.time()
+        if ok and m.state == DOWN:
+            m.state, m.reason = UP, ""
+            self.show_status(f"{m.name} にまた繋がりました。振り分けを再開します。" + self.job_counts())
+            self._start_jobs()
+
+    def machine_lines(self) -> str:
+        """ジョブ一覧に出す台の状態 (振り分けるジョブがないときは空)。"""
+        if not app.profile().machines or not any(j.machines for j in self.jobs):
+            return ""
+        self._refresh_machines()
+        reason = machines.no_machines_reason()
+        if reason:
+            return reason
+        running = Counter(comfy._url_key(j.request.url) for j in self.jobs if j.state == RUNNING)
+        parts = []
+        for url in machines.all_machines():
+            m = self.machine_states[comfy._url_key(url)]
+            if m not in self._pool:
+                parts.append(f"{m.name}: 休み")
+            elif m.state == DOWN:
+                parts.append(f"{m.name}: {m.reason} (30 秒ごとに確かめます)")
+            elif m.state == OFF:
+                parts.append(f"{m.name}: {m.reason} (「台の設定...」を開き直すと戻ります)")
+            else:
+                parts.append(f"{m.name}: 実行中 {running[m.key]} 件・完了 {m.done} 件")
+        return "台  " + "   ".join(parts)
+
+    def edit_machines(self, parent: Optional[QWidget] = None):
+        """「台の設定...」(ジョブ一覧から)。"""
+        if machines.MachinesDialog(parent or self.window).exec() == QDialog.DialogCode.Accepted:
+            self._start_jobs()
 
     def _run(self, job: GenJob):
         job.state = RUNNING
@@ -419,6 +629,7 @@ class GenerationController(QObject):
         job.started = time.monotonic()
         job.started_at = time.time()
         job.finished_at = None
+        job.at_comfy = job.unreachable = False
         job.set_status("準備中...")
         self._show_job_status(job)
         signals = self._signals
@@ -433,6 +644,7 @@ class GenerationController(QObject):
                 req = job.request
                 if req.enhancer is not None and req.enhanced_prompt is None and (req.source_prompt or "").strip():
                     self._enhance(job, signals)
+                job.at_comfy = True
                 outputs = comfy.generate(
                     job.source, job.request, lambda text: signals.progress.emit(job, text), job.cancel,
                     prompt_id, lambda new_id: signals.submitted.emit(job, new_id),
@@ -443,6 +655,9 @@ class GenerationController(QObject):
                     comfy.add_history(path, job.source, job.request)  # どの設定で作ったかを残す
             except Exception as exc:  # noqa: BLE001 - どんな失敗もジョブの失敗として見せる
                 error = exc
+                if job.assigned and job.at_comfy and isinstance(exc, comfy.ComfyError) and not job.cancel.is_set():
+                    # 振り分け: 台が落ちたのか、この件だけの失敗かを見分ける
+                    job.unreachable = comfy.test_connection(job.request.url) is not None
             signals.finished.emit(job, outputs, error)
 
         threading.Thread(target=work, daemon=True).start()
@@ -542,6 +757,33 @@ class GenerationController(QObject):
         message = ""
         job.reading = False
         job.finished_at = time.time()
+        m = self.machine_states.get(comfy._url_key(job.request.url)) if job.assigned else None
+        if m is not None and job.unreachable and not job.cancel.is_set():
+            # 振り分け: 台に繋がらなくなった。この件は待機に戻してほかの台に回し、繋がらない台は 30 秒ごとに確かめる
+            m.state, m.reason, m.last_check = DOWN, f"{time.strftime('%H:%M')} から繋がりません", time.time()
+            for other in self.jobs:  # この台に頼み済みで待っているものも、ほかの台で頼み直す
+                if other.state == WAITING and other.assigned and comfy._url_key(other.request.url) == m.key:
+                    other.unassign()
+            job.unassign()
+            job.state = WAITING
+            job.started_at = job.finished_at = None
+            job.set_status(f"{m.name} に繋がらないので、ほかの台に回します")
+            self.show_status(f"{m.name} に繋がりません。残りはほかの台に回します" + self.job_counts())
+            self._start_jobs()
+            return
+        if m is not None and error is None:
+            m.done += 1
+            m.fail_streak = 0
+        elif (m is not None and job.at_comfy and isinstance(error, comfy.ComfyError)
+              and not job.cancel.is_set()):
+            # 台には繋がるのに失敗した: 続けて FAIL_LIMIT 件失敗したら (ほかに動いている台があれば) その台を外す
+            m.fail_streak += 1
+            others_ok = any(o is not m and o.state == UP and o.fail_streak == 0 for o in self._pool)
+            if m.fail_streak >= FAIL_LIMIT and others_ok:
+                m.state = OFF
+                m.reason = f"{FAIL_LIMIT} 件続けて失敗したので外しました: {str(error).splitlines()[0] if str(error) else ''}"
+                self.show_status(f"{m.name} を外しました ({FAIL_LIMIT} 件続けて失敗)。残りはほかの台に回します")
+
         if isinstance(error, comfy.GenerationHeld) and not job.cancel.is_set():
             # 一時停止中に ComfyUI 側から消えた・つながらなくなった: 待機に戻して再開を待つ
             job.state = WAITING
@@ -549,6 +791,8 @@ class GenerationController(QObject):
             job.started_at = job.finished_at = None  # 待機に戻したので、時刻は次に始めた・終わったときに決まる
             if not error.sent:
                 job.prompt_id = ""
+                if job.machines:
+                    job.unassign()  # 頼んでいないので、再開したら空いている台に回す
             job.set_status("一時停止のため待機に戻しました")
             self.show_status(f"{job.file_name} を待機に戻しました" + self.job_counts())
         elif isinstance(error, comfy.GenerationCancelled) or (error is not None and job.cancel.is_set()):
@@ -728,6 +972,7 @@ def _job_to_dict(job: GenJob) -> dict:
         "promptId": job.prompt_id,
         "needRead": job.need_read,
         "group": job.group,
+        "machines": job.machines,
         "request": dict(job.request.__dict__),
     }
 
@@ -751,7 +996,23 @@ def _job_from_dict(data) -> Optional[GenJob]:
         group = 0
     job = GenJob(source, request, bool(data.get("batch")), need_read, group)
     job.prompt_id = str(data.get("promptId") or "")
+    job.machines = bool(data.get("machines")) or job.machines
+    if job.machines and not job.prompt_id:
+        job.unassign()  # 頼んでいないものは、空いている台に回し直す
     return job
+
+
+def _wf_key(job: GenJob) -> str:
+    return os.path.normcase(job.request.workflow_path or "")
+
+
+def _cancel_prompts(pairs: list) -> None:
+    """(台の URL, prompt_id) を ComfyUI の待ち行列から外す (繋がらなければそのまま)。"""
+    for url, pid in pairs:
+        try:
+            comfy.cancel_prompt(url, pid)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _load_jobs() -> tuple[list, bool]:
