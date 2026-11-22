@@ -3,6 +3,8 @@
 PromptWordCrafter・ImageMimicArt・MuseFactory (どれも Python + PySide6) が共通で使う、生成と読み取りの部品です。
 J-Rate (C#) は言語が違うので部品は使いませんが、同じ決まりと同じ設定ファイルで動きます。
 
+**ImageMimicArt は 2026-11-22 に開発を終え、今後は使わない** (利用者の決定。J-Rate・PromptWordCrafter・MuseFactory・PrismLab の 4 本でほしい機能がそろったため)。GenCommon を直すときに ImageMimicArt との互換は気にしなくてよい (使っているのは PromptWordCrafter・MuseFactory・PrismLab)。
+
 - 決まりごと: `J-Rate\docs\generation-standard.md` (特に 11 章「3 つのアプリで共有するもの」)
 - 置き場所: `C:\Users\ilove\Desktop\WindowsApp\AI_projects\GenCommon\gencommon`。各アプリの `main.py` がこのフォルダを読み込み、EXE を作るときも `.spec` の `pathex` で取り込みます。
 - J-Rate・PromptWordCrafter・ImageMimicArt・MuseFactory・GenCommon は同じフォルダ (`AI_projects`) に並べて置きます (アプリは隣の `..\GenCommon` を探すので、移すときはまとめて移します)。
