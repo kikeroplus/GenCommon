@@ -69,6 +69,11 @@ class HazardButton(QPushButton):
             back = back.darker(118)
         elif on and self.underMouse():
             back = back.lighter(112) if back.lightness() < 128 else back.darker(106)
+        # 内側は無地 (Windows 11 のボタンの色は半透明で縞が透けるので、先に窓の背景色で塗りつぶす)
+        solid = QColor(self.palette().window().color())
+        solid.setAlpha(255)
+        p.setBrush(solid)
+        p.drawRoundedRect(inner, self.RADIUS - 2, self.RADIUS - 2)
         p.setBrush(back)
         p.drawRoundedRect(inner, self.RADIUS - 2, self.RADIUS - 2)
         p.setPen(self.palette().buttonText().color() if on else self.palette().color(
