@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCursor
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPolygonF
 from PySide6.QtWidgets import (QApplication, QDialog, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget)
 
@@ -18,6 +18,65 @@ from . import app, machines, recipe_link
 POLL_MS = 1500  # 進み具合・出してもらったレシピを読み直す間隔
 CONFIRM_COUNT = 30  # これを超える件数を頼むときは確かめる
 SHOW_DONE_SECONDS = 10 * 60  # 終わったものも、これだけのあいだは進み具合の行に出す
+
+
+HAZARD_YELLOW = QColor("#f5c400")
+HAZARD_BLACK = QColor("#1a1a1a")
+
+
+class HazardButton(QPushButton):
+    """レシピのボタン (選んでポンの「ポン」)。黄色と黒のななめ縞の縁取り (工事現場ふう。2026-11-22 利用者の希望)。
+    押せないとき (入口に合わないレシピ) は縞を灰色にする。"""
+
+    BORDER = 4  # 縞の縁の太さ
+    STRIPE = 7  # 縞 1 本の幅
+    RADIUS = 5
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        return QSize(fm.horizontalAdvance(self.text()) + 26 + 2 * self.BORDER, fm.height() + 12 + 2 * self.BORDER)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        on = self.isEnabled()
+        yellow = HAZARD_YELLOW if on else QColor("#a8a8a8")
+        black = HAZARD_BLACK if on else QColor("#6a6a6a")
+        outer = QPainterPath()
+        outer.addRoundedRect(rect, self.RADIUS, self.RADIUS)
+        p.setClipPath(outer)
+        p.fillRect(rect, black)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(yellow)
+        h, w = rect.height(), self.STRIPE
+        x = -h
+        while x < rect.width() + h:  # 右上がりのななめ縞
+            p.drawPolygon(QPolygonF([QPointF(x, h), QPointF(x + w, h), QPointF(x + w + h, 0), QPointF(x + h, 0)]))
+            x += 2 * w
+        p.setClipping(False)
+        inner = rect.adjusted(self.BORDER, self.BORDER, -self.BORDER, -self.BORDER)
+        back = self.palette().button().color()
+        if on and self.isDown():
+            back = back.darker(118)
+        elif on and self.underMouse():
+            back = back.lighter(112) if back.lightness() < 128 else back.darker(106)
+        p.setBrush(back)
+        p.drawRoundedRect(inner, self.RADIUS - 2, self.RADIUS - 2)
+        p.setPen(self.palette().buttonText().color() if on else self.palette().color(
+            self.palette().ColorGroup.Disabled, self.palette().ColorRole.ButtonText))
+        font = self.font()
+        font.setBold(on)
+        p.setFont(font)
+        p.drawText(inner, Qt.AlignmentFlag.AlignCenter, self.text())
 
 
 class RecipePanel(QGroupBox):
@@ -52,7 +111,7 @@ class RecipePanel(QGroupBox):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFixedHeight(self.machines_button.sizeHint().height() + 14)
+        scroll.setFixedHeight(HazardButton("A").sizeHint().height() + 8)
         row.addWidget(scroll, 1)
         self.edit_button = QPushButton("PrismLab で直す...")
         self.edit_button.setToolTip("レシピの中身・出すレシピは PrismLab で決めます (量産ラインの「ほかのアプリに出す」)")
@@ -101,7 +160,7 @@ class RecipePanel(QGroupBox):
             note.setStyleSheet(f"color: {app.profile().colors.hint};")
             self.buttons_row.addWidget(note)
         for r in self._recipes:
-            button = QPushButton(r.name or "(名前なし)")
+            button = HazardButton(r.name or "(名前なし)")
             tip = r.flow + (f"\n回数 {r.repeat}" if r.repeat > 1 else "")
             tip += f"\n\n⚠ {r.problem}" if r.problem else "\n\n選んでいるファイルを、このレシピで生成します (PrismLab が裏で動かします)。"
             button.setToolTip(tip)
