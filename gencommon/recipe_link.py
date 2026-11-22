@@ -40,10 +40,16 @@ def _prism_dir() -> Path:
 
 
 def _read_json(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
+    """読めなければ None。PrismLab が書き換えている瞬間に当たったときのため、少し待ってもう一度だけ読む。"""
+    for attempt in range(2):
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            if attempt == 0:
+                time.sleep(0.05)
+    return None
 
 
 @dataclass
@@ -184,6 +190,7 @@ class Status:
     finished_at: Optional[float] = None
     machines: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    paths: list = field(default_factory=list)  # 出来たファイル
 
     @property
     def active(self) -> bool:
