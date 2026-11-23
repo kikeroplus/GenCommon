@@ -4,7 +4,8 @@
 - 生成の画面の接続先で「振り分け」を選ぶと、ジョブを空いている台に回す (1 台に同時に 2 件まで)。
 - 台はアプリごと (%APPDATA%\\(アプリ名)。2026-11-22 利用者の希望: 「PWC は台 A・B だけ」のように分ける)。
   別の PC とは共有しない。初めて開いたときは、前の置き場所 (%APPDATA%\\GenCommon) か PrismLab で選んだ台を写す。
-  PrismLab のレシピで生成するとき (recipe_link.py) も、この台を PrismLab に渡す。
+  PrismLab のレシピで生成するとき (recipe_link.py) も、この台を PrismLab に渡す。台の設定を OK で閉じると、
+  PrismLab で動いているこのアプリの頼みも、新しい台で続ける。
 - 「使う」を外した台は休み (台の設定に残したまま、一時的に使わない)。
 
 台の状態 (繋がらない・続けて失敗したので外した) は generation.GenerationController が持つ。
@@ -245,4 +246,7 @@ class MachinesDialog(QDialog):
 
     def _save(self) -> None:
         set_machines(self.urls(), self.off())
+        from . import recipe_link  # recipe_link がこのモジュールを読むので、ここで読む
+
+        recipe_link.update_machines()  # PrismLab で動いている頼みの台も入れ替える
         self.accept()

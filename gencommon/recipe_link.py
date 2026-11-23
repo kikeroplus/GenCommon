@@ -6,7 +6,8 @@
 
 - 出してもらったレシピ: %APPDATA%\\PrismLab\\published.json (PrismLab がレシピを保存するたびに書く)
 - 進み具合: %APPDATA%\\PrismLab\\external_status.json (PrismLab が書く。こちらは読むだけ)
-- 台: このアプリで選んだ台 (machines.py) を頼むときに渡す
+- 台: このアプリで選んだ台 (machines.py) を頼むときに渡す。台の設定を OK で閉じたら {"cmd": "machines", ...} を送り、
+  動いている頼みの台も入れ替えてもらう
 - 出来たファイルはこのアプリの決まりの場所 (テキストのフォルダの「生成結果」) に、PrismLab が置く。記録も PrismLab に残り、
   生成結果の帯はそれを読む (どのレシピの何番目のステップで出来たかも見られる)
 """
@@ -144,6 +145,13 @@ def run(recipe: PublishedRecipe, files: list[Path]) -> tuple[str, str]:
     error = _send({"cmd": "run", "id": rid, "from": app.profile().name, "recipe": recipe.name, "index": recipe.index,
                    "files": [str(f) for f in files], "machines": urls})
     return ("", error) if error else (rid, "")
+
+
+def update_machines() -> str:
+    """台の設定を変えた: 動いている頼みの台も入れ替えてもらう (2026-11-23 利用者の希望)。
+    PrismLab が動いていなければ何もしない (起動もしない。動いている頼みはない)。"""
+    error = _send({"cmd": "machines", "from": app.profile().name, "machines": machines.machines()})
+    return "" if error == "PrismLab が動いていません。" else error
 
 
 def cancel(rid: str) -> str:
