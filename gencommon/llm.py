@@ -20,6 +20,11 @@ class LLMError(Exception):
     """利用者に見せるエラー (文は日本語)。"""
 
 
+class LLMOffline(LLMError):
+    """LLM のサーバーに繋がらない (LM Studio が動いていない・PC が落ちている・応答がない)。
+    PrismLab の「英語に」は、これのときだけ訳さずに先へ進める (2026-11-23 利用者の希望)。"""
+
+
 def _request(url: str, payload: Optional[dict] = None, timeout: float = REQUEST_TIMEOUT) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
@@ -45,7 +50,11 @@ def _request(url: str, payload: Optional[dict] = None, timeout: float = REQUEST_
             ) from exc
         raise LLMError(f"サーバーがエラーを返しました ({exc.code}) {detail[:300]}") from exc
     except urllib.error.URLError as exc:
-        raise LLMError(f"サーバーに接続できません: {exc.reason}") from exc
+        raise LLMOffline(f"サーバーに接続できません: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise LLMOffline("サーバーの応答がありません (時間切れ)。") from exc
+    except ConnectionError as exc:
+        raise LLMOffline(f"サーバーとの接続が切れました: {exc}") from exc
     except (OSError, ValueError) as exc:
         raise LLMError(str(exc)) from exc
 

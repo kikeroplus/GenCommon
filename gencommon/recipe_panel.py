@@ -293,6 +293,13 @@ class RecipePanel(QGroupBox):
 
 
 def _line(s: recipe_link.Status) -> str:
+    text = _line_main(s)
+    if s.warning and s.state != "error":
+        text += f"  ⚠ {s.warning}"
+    return text
+
+
+def _line_main(s: recipe_link.Status) -> str:
     if s.state == "error":
         return f"✗「{s.recipe}」: {s.error}"
     finished = s.done + s.failed + s.canceled

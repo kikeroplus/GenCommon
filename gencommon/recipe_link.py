@@ -191,6 +191,8 @@ class Status:
     machines: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     paths: list = field(default_factory=list)  # 出来たファイル
+    untranslated: int = 0  # 「英語に」で LLM に繋がらず、訳さずに送った件
+    warning: str = ""  # 知らせ (失敗ではない。「LLM に繋がらないので、英語にせずに送りました (n 件)」)
 
     @property
     def active(self) -> bool:
