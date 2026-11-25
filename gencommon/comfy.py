@@ -178,6 +178,9 @@ class GenRequest:
     origin_text: Optional[str] = None
     recipe: str = ""
     step: int = 0
+    # 値を変える (value_slots): 送るときにワークフローの中の値を差し替える [{node, input, value, class_type, title}]。
+    # None = ワークフローのまま (PrismLab の生成ステップ。2026-11-25)
+    values: Optional[list] = None
 
     @property
     def reader_name(self) -> str:
@@ -824,6 +827,8 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
         record["reference"] = req.reference  # リファレンス画像 (主に顔)
     if req.last_frame:
         record["lastFrame"] = req.last_frame  # ラストフレーム
+    if req.values:
+        record["values"] = req.values  # 値を変えたもの (ノード・入力・値)
     if req.origin:
         record["origin"] = req.origin  # 入口のファイル (PrismLab の量産)
         if req.origin_text is not None:
@@ -1085,6 +1090,8 @@ def _to_record(data: dict) -> GenRecord:
             req.enhanced_prompt = str(data["enhancedPrompt"])
     if isinstance(data.get("inserts"), list):
         req.inserts = [d for d in data["inserts"] if isinstance(d, dict)]
+    if isinstance(data.get("values"), list):
+        req.values = [d for d in data["values"] if isinstance(d, dict)] or None
     if data.get("seconds") is not None:
         try:
             req.seconds = float(data["seconds"])
@@ -1368,6 +1375,96 @@ def _randomize_seeds(wf: dict) -> None:
                 inputs[key] = _rng.randrange(0, 10**15)
 
 
+# ----------------------------------------------------------------------
+# 値を変える (2026-11-25 利用者の希望。PrismLab の生成ステップ)
+#   モデル・LoRA・サイズ (megapixels)・サンプラー・フォルダなど、値だけが違うワークフローを何本も作らずに済むように、
+#   送るときにワークフローの中の値を差し替える (ファイルは書き換えない)。1 件は {"node", "input", "value"}
+#   (表示用に "class_type"・"title" も持つ)。場所はノードの番号と入力名で決める
+# ----------------------------------------------------------------------
+VALUE_SKIP = ("seed", "noise_seed")  # 毎回ランダムにするもの (変える値の候補に出さない)
+VALUE_TYPES = (str, int, float, bool)
+
+
+def _node_order(nid: str):
+    """ノードの番号の並べ方 (サブグラフの 41183:41163 なども数で比べる)。"""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", str(nid)) if p]
+
+
+def value_slots(wf: dict) -> list[dict]:
+    """変える値の候補: 実際に使われるノードの、値が直接入っている入力 ({node, input, class_type, title, value})。
+    アプリが入れるもの (元画像・プロンプト・長さ・シード) と、線でつながった入力は除く。"""
+    used = _used_node_ids(wf)
+    managed = {(id(inputs), key) for inputs, key in _prompt_slot_candidates(wf)}
+    d_inputs, d_key, _node = _duration_slot(wf)
+    if d_inputs is not None:
+        managed.add((id(d_inputs), d_key))
+    slots = []
+    for nid in sorted(used, key=_node_order):
+        node = wf[nid]
+        inputs = node.get("inputs") or {}
+        ct = _class_type(node)
+        for key, value in inputs.items():
+            if (_is_link(value) or key in VALUE_SKIP or not isinstance(value, VALUE_TYPES)
+                    or (id(inputs), key) in managed or (ct == "LoadImage" and key == "image")
+                    or (isinstance(value, str) and PROMPT_MARKER in value)):
+                continue
+            slots.append({"node": str(nid), "input": key, "class_type": ct, "title": _title(node), "value": value})
+    return slots
+
+
+def value_label(v: dict) -> str:
+    """変える値の名前 (例: 拡散モデルを読み込む の unet_name)。"""
+    name = str(v.get("title") or v.get("class_type") or f"ノード {v.get('node')}")
+    return f"{name} の {v.get('input')}"
+
+
+def value_problems(wf: dict, values) -> list[str]:
+    """変える値のうち、このワークフローに場所がないもの (名前の一覧)。"""
+    bad = []
+    for v in values or []:
+        node = wf.get(str(v.get("node")))
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        key = str(v.get("input") or "")
+        if not isinstance(inputs, dict) or key not in inputs or _is_link(inputs[key]):
+            bad.append(value_label(v))
+        elif v.get("class_type") and _class_type(node) != v.get("class_type"):
+            bad.append(value_label(v))  # 番号は同じでも、別のノードになっている (ワークフローを作り直した)
+    return bad
+
+
+def apply_values(wf: dict, values) -> None:
+    """変える値をワークフローに入れる。場所がなければ ComfyError (違う値で生成しないように)。"""
+    bad = value_problems(wf, values)
+    if bad:
+        raise ComfyError("値を変える場所がワークフローにありません: " + "、".join(bad) +
+                         "\nワークフローを作り直したときは、ステップの「値を変える」を選び直してください。")
+    for v in values or []:
+        wf[str(v["node"])]["inputs"][str(v["input"])] = v.get("value")
+
+
+def input_choices(base_url: str, class_type: str, key: str, timeout: float = 10) -> Optional[list]:
+    """ComfyUI に聞いた、その入力で選べるもの (モデル名・LoRA 名・サンプラーなど)。選ぶ形でなければ None。
+    繋がらなければ ComfyConnectionError。"""
+    url = (base_url or DEFAULT_URL).rstrip("/") + "/object_info/" + urllib.parse.quote(class_type, safe="")
+    raw = _request(url, timeout=timeout)
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        spec = data[class_type]["input"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    for part in ("required", "optional"):
+        entry = (spec.get(part) or {}).get(key) if isinstance(spec, dict) else None
+        if not isinstance(entry, list) or not entry:
+            continue
+        if isinstance(entry[0], list):  # 前の形: [[選べるもの...], {...}]
+            return [str(x) for x in entry[0]]
+        if entry[0] == "COMBO" and len(entry) > 1 and isinstance(entry[1], dict):  # 新しい形: ["COMBO", {"options": [...]}]
+            options = entry[1].get("options")
+            return [str(x) for x in options] if isinstance(options, list) else None
+        return None
+    return None
+
+
 def describe_workflow(wf: dict) -> str:
     """設定画面に出す確認結果。"""
     kind = "動画用" if is_video_workflow(wf) else "画像用"
@@ -1552,6 +1649,8 @@ def generate(
 
     def submit() -> str:
         wf = load_workflow(req.workflow_path)
+        if req.values:
+            apply_values(wf, req.values)  # 場所がなければ ComfyError (頼む前に止める)
         _randomize_seeds(wf)
         load_nodes = _load_image_nodes(wf) if app.profile().reads else []
         if load_nodes:
