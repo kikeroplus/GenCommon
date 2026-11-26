@@ -172,6 +172,9 @@ class GenRequest:
     # ラストフレーム (ファーストフレーム・ラストフレームを指定する動画のワークフロー)。タイトルでラストフレーム用と
     # 分かる LoadImage に入れる (last_frame_nodes)。None なら、ラストフレーム用の LoadImage にも元画像を入れる (今までどおり)
     last_frame: Optional[str] = None
+    # ラベルを決めて入れる画像 (2026-11-26 利用者の希望): ラベル → 画像のパス。タイトルがラベルと同じ (大文字・小文字は
+    # 区別しない) 画像の入口に入れる。リファレンス・ラストフレームより先に見る。None / 空 = なし
+    images: Optional[dict] = None
     # PrismLab の量産・試作: 入口のファイル (どのステップの出力でも同じ)・始めたときの入口のテキストの中身・
     # レシピ名・何番目のステップか (1 から)。PromptWordCrafter の生成結果の帯がテキストから結果をたどるのに使う
     origin: str = ""
@@ -827,6 +830,8 @@ def add_history(output: str, source: str, req: GenRequest) -> None:
         record["reference"] = req.reference  # リファレンス画像 (主に顔)
     if req.last_frame:
         record["lastFrame"] = req.last_frame  # ラストフレーム
+    if req.images:
+        record["images"] = dict(req.images)  # ラベルを決めて入れた画像 (ラベル → パス)
     if req.values:
         record["values"] = req.values  # 値を変えたもの (ノード・入力・値)
     if req.origin:
@@ -1398,6 +1403,7 @@ def value_slots(wf: dict) -> list[dict]:
     d_inputs, d_key, _node = _duration_slot(wf)
     if d_inputs is not None:
         managed.add((id(d_inputs), d_key))
+    managed |= {(id(node["inputs"]), key) for node, key in image_slots(wf)}  # 画像の入口は画像のステップで入れる
     slots = []
     for nid in sorted(used, key=_node_order):
         node = wf[nid]
@@ -1474,7 +1480,7 @@ def describe_workflow(wf: dict) -> str:
     duration = "長さを変えられます" if get_duration(wf) is not None else "長さは変えられません"
     text = f"ワークフローを確認しました ({kind}、ノード {len(wf)} 個、{prompt}、{duration})"
     if not app.profile().reads:
-        if count_nodes(wf, "LoadImage"):
+        if image_slots(wf):
             text += "\n※「Load Image」ノードがあります。画像はワークフローに書かれているものがそのまま使われます。"
     elif uses_source_image(wf):
         text += "\n「Load Image」ノードがあるので、元画像も送って入れます。"
@@ -1483,10 +1489,62 @@ def describe_workflow(wf: dict) -> str:
     return text
 
 
+# 画像の入口 (2026-11-26 利用者の希望で LoadImage 以外にも広げた): 入力に ComfyUI の input の画像の名前 (x.png・
+# sub/x.webp など) が書かれているノード。LoadImageMask やカスタムノードの読み込みも入る。
+# URL や絶対パスを読むノード (送った名前を入れると壊れる) と、output・temp の画像を読むもの ([output] 付き) は入れない
+IMAGE_NAME_RE = re.compile(r"\.(png|jpe?g|webp|bmp|gif|tiff?)$", re.IGNORECASE)
+
+
+def _is_image_name(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    v = value.strip()
+    if not v or "://" in v or v.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", v):
+        return False
+    return bool(IMAGE_NAME_RE.search(v))
+
+
+def image_slots(wf: dict) -> list[tuple[dict, str]]:
+    """画像を入れる場所: 実際に使われるノードのうち、画像の名前を持つもの (ノード, 入力の名前)。並びはノードの番号順。
+    LoadImage は名前が空でも image に入れる。1 つのノードに 1 か所 (最初に見つかった入力)。"""
+    out = []
+    for nid in sorted(_used_node_ids(wf), key=_node_order):
+        node = wf[nid]
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        if _class_type(node) == "LoadImage" and "image" in inputs and not _is_link(inputs["image"]):
+            out.append((node, "image"))
+            continue
+        for key, value in inputs.items():
+            if _is_image_name(value):
+                out.append((node, key))
+                break
+    return out
+
+
 def _load_image_nodes(wf: dict) -> list[dict]:
-    """元画像を入れる場所: 実際に使われる LoadImage ノード。"""
-    used = _used_node_ids(wf)
-    return [wf[nid] for nid in used if _class_type(wf[nid]) == "LoadImage" and "image" in wf[nid]["inputs"]]
+    """元画像を入れる場所: 実際に使われる画像の入口のノード (image_slots)。"""
+    return [node for node, _key in image_slots(wf)]
+
+
+def node_label(node: dict) -> str:
+    """ノードのラベル (ComfyUI で付けたタイトル。付けていなければ空)。"""
+    return _title(node).strip()
+
+
+def image_labels(wf: dict) -> list[str]:
+    """画像の入口に付いたラベル (タイトル) の並び (重ならないように。空は除く)。ラベルで入れる先を選ぶときの候補。"""
+    return list(dict.fromkeys(node_label(n) for n in _load_image_nodes(wf) if node_label(n)))
+
+
+def same_label(node: dict, label: str) -> bool:
+    """ノードのタイトルがラベルと同じか (前後の空白・大文字と小文字は見ない)。"""
+    return bool(label.strip()) and node_label(node).lower() == label.strip().lower()
+
+
+def has_label(wf: dict, label: str) -> bool:
+    return any(same_label(n, label) for n in _load_image_nodes(wf))
 
 
 # リファレンス用の LoadImage: タイトル (_meta.title) にこの言葉を含むもの。英語は単語として (Refine などを拾わない)
@@ -1652,30 +1710,32 @@ def generate(
         if req.values:
             apply_values(wf, req.values)  # 場所がなければ ComfyError (頼む前に止める)
         _randomize_seeds(wf)
-        load_nodes = _load_image_nodes(wf) if app.profile().reads else []
-        if load_nodes:
+        slots = image_slots(wf) if app.profile().reads else []
+        if slots:
             if cancel.is_set():
                 raise GenerationCancelled()
-            # リファレンスを渡されたときだけ、リファレンス用の LoadImage に分けて入れる (なければ今までどおり全部に元画像)
-            ref_nodes = [n for n in load_nodes if is_reference_node(n)] if req.reference else []
-            # ラストフレームも同じ: 渡されたときだけ、ラストフレーム用の LoadImage に分けて入れる
-            last_nodes = [n for n in load_nodes if is_last_frame_node(n)] if req.last_frame else []
-            src_nodes = [n for n in load_nodes if not any(n is r for r in ref_nodes + last_nodes)]
-            if src_nodes:
-                progress("元画像を ComfyUI に送っています...")
-                uploaded = _upload_image(base_url, source)
-                for node in src_nodes:
-                    node["inputs"]["image"] = uploaded
-            if ref_nodes:
-                progress("リファレンス画像を ComfyUI に送っています...")
-                uploaded_ref = _upload_image(base_url, req.reference)
-                for node in ref_nodes:
-                    node["inputs"]["image"] = uploaded_ref
-            if last_nodes:
-                progress("ラストフレームを ComfyUI に送っています...")
-                uploaded_last = _upload_image(base_url, req.last_frame)
-                for node in last_nodes:
-                    node["inputs"]["image"] = uploaded_last
+            # 入れる画像を決める: ラベルを決めた画像 (タイトルが同じもの) → リファレンス → ラストフレーム → 元画像。
+            # リファレンス・ラストフレームは渡されたときだけ分けて入れる (なければ今までどおり元画像)
+            labels = {str(k).strip().lower(): str(v) for k, v in (req.images or {}).items() if str(k).strip() and v}
+            plan: dict = {}  # (何の画像か, パス) → [(ノード, 入力)]
+            for node, key in slots:
+                title = node_label(node).lower()
+                if title in labels:
+                    what = (f"「{node_label(node)}」の画像", labels[title])
+                elif req.reference and is_reference_node(node):
+                    what = ("リファレンス画像", req.reference)
+                elif req.last_frame and is_last_frame_node(node):
+                    what = ("ラストフレーム", req.last_frame)
+                else:
+                    what = ("元画像", source)
+                plan.setdefault(what, []).append((node, key))
+            sent: dict = {}  # パス → 送った名前 (同じ画像は 1 回だけ送る)
+            for (what, path), places in plan.items():
+                if path not in sent:
+                    progress(f"{what}を ComfyUI に送っています...")
+                    sent[path] = _upload_image(base_url, path)
+                for node, key in places:
+                    node["inputs"][key] = sent[path]
         prompt = req.full_prompt
         if prompt is not None:
             marked = bool(_marker_slots(wf))
