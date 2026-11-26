@@ -1,7 +1,7 @@
 """「PrismLab のレシピ」の段: 台を選び、ファイルを選んでレシピのボタンを押すと生成が始まる (選んでポン)。
 
 PromptWordCrafter・MuseFactory で共通 (recipe_link.py。PrismLab の docs\\spec.md 6 章)。
-段の中身: [台: A · B] [レシピ 1] [レシピ 2] … [PrismLab で直す...] / 進み具合の行 [中止]
+段の中身: [台: A · B] [レシピ 1] [レシピ 2] … [PrismLab で直す...] / 進み具合の一覧 (5 行を超えたらスクロール) [残り N 件][中止]
 """
 
 import time
@@ -18,6 +18,7 @@ from . import app, machines, recipe_link
 POLL_MS = 1500  # 進み具合・出してもらったレシピを読み直す間隔
 CONFIRM_COUNT = 30  # これを超える件数を頼むときは確かめる
 SHOW_DONE_SECONDS = 10 * 60  # 終わったものも、これだけのあいだは進み具合の行に出す
+STATUS_LINES = 5  # 進み具合の一覧はこの行数まで伸ばし、それより多いときはスクロールにする
 
 
 HAZARD_YELLOW = QColor("#f5c400")
@@ -127,12 +128,27 @@ class RecipePanel(QGroupBox):
         srow = QHBoxLayout()
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.status_label.setStyleSheet(f"color: {hint};")
+        self.status_scroll = QScrollArea()  # STATUS_LINES 行を超えたらスクロール
+        self.status_scroll.setWidget(self.status_label)
+        self.status_scroll.setWidgetResizable(True)
+        self.status_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.status_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.remaining_label = QLabel()  # 残り件数 (動いているもの全部の合計)
+        self.remaining_label.setToolTip("まだ終わっていない件数 (実行中・待機・★待ちを含む。動いているレシピ全部の合計)")
+        font = self.remaining_label.font()
+        font.setBold(True)
+        self.remaining_label.setFont(font)
         self.cancel_button = QPushButton("中止...")
         self.cancel_button.setToolTip("頼んだ生成を止めます (出来たものは残します)")
         self.cancel_button.clicked.connect(self._cancel_menu)
-        srow.addWidget(self.status_label, 1)
-        srow.addWidget(self.cancel_button)
+        side = QVBoxLayout()
+        side.addWidget(self.remaining_label, 0, Qt.AlignmentFlag.AlignRight)
+        side.addWidget(self.cancel_button)
+        side.addStretch(1)
+        srow.addWidget(self.status_scroll, 1, Qt.AlignmentFlag.AlignTop)
+        srow.addLayout(side)
         box.addLayout(srow)
 
         self._timer = QTimer(self)
@@ -262,11 +278,28 @@ class RecipePanel(QGroupBox):
                 if m.get("state") != "up" and m.get("reason")}
         lines += [f"台 {name}: {reason}" for name, reason in down.items()]
         self.status_label.setText("\n".join(lines))
-        self.status_label.setVisible(bool(lines))
+        self.status_scroll.setVisible(bool(lines))
+        self._fit_status()
         self._active = [s for s in shown if s.active]
+        left = sum(_remaining(s) for s in self._active)
+        self.remaining_label.setText(f"残り {left} 件")
+        self.remaining_label.setVisible(bool(self._active))
         self.cancel_button.setVisible(bool(self._active))
         if added:
             self.outputs_added.emit()
+
+    def _fit_status(self) -> None:
+        """一覧の高さを中身に合わせる (STATUS_LINES 行まで。それより多いときはスクロール)。"""
+        width = self.status_scroll.width() - 2
+        need = self.status_label.heightForWidth(width) if self.status_label.text() else 0
+        most = self.status_label.fontMetrics().lineSpacing() * STATUS_LINES + 4
+        if need > most:  # スクロールバーのぶん狭くなって折り返しが増える
+            need = self.status_label.heightForWidth(width - self.status_scroll.verticalScrollBar().sizeHint().width())
+        self.status_scroll.setFixedHeight(max(1, min(need, most)))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_status)  # 中の一覧の幅が決まってから測る
 
     def _cancel_menu(self) -> None:
         active = getattr(self, "_active", [])
@@ -299,6 +332,10 @@ def _line(s: recipe_link.Status) -> str:
     return text
 
 
+def _remaining(s: recipe_link.Status) -> int:
+    return max(0, s.total - (s.done + s.failed + s.canceled))
+
+
 def _line_main(s: recipe_link.Status) -> str:
     if s.state == "error":
         return f"✗「{s.recipe}」: {s.error}"
@@ -306,7 +343,7 @@ def _line_main(s: recipe_link.Status) -> str:
     extra = [f"失敗 {s.failed}" if s.failed else "", f"★待ち {s.gated}" if s.gated else ""]
     extra = "・".join(e for e in extra if e)
     if s.state == "running":
-        detail = f"実行中 {s.running}" + (f"・待機 {s.waiting}" if s.waiting else "")
+        detail = f"残り {_remaining(s)}・実行中 {s.running}" + (f"・待機 {s.waiting}" if s.waiting else "")
         return f"▶「{s.recipe}」{finished}/{s.total} 件 ({detail}{'・' + extra if extra else ''})"
     word = "止めました" if s.state == "canceled" else "完了"
     text = f"{'■' if s.state == 'canceled' else '✓'}「{s.recipe}」{word}: {s.done}/{s.total} 件 (出来たファイル {s.outputs})"
