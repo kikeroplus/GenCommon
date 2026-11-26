@@ -67,27 +67,40 @@ def _looks_like_no_vision(detail: str) -> bool:
 
 
 def chat(base_url: str, model: str, system: str, user: str, temperature: float,
-         image_url: str = "") -> str:
+         image_url: str = "", max_tokens: Optional[int] = None) -> str:
     """system と user を 1 往復送り、返事の本文を返す。
 
     image_url (data:image/jpeg;base64,... の形) を渡すと、user の文と一緒に画像も見せる。
+    max_tokens を渡すと、返事をその長さで打ち切ってもらう (打ち切られたかは chat_full で分かる)。
     """
+    return chat_full(base_url, model, system, user, temperature, image_url, max_tokens)[0]
+
+
+def chat_full(base_url: str, model: str, system: str, user: str, temperature: float,
+              image_url: str = "", max_tokens: Optional[int] = None) -> tuple[str, bool]:
+    """chat と同じ。(返事の本文, 長さの上限で打ち切られたか) を返す。"""
     messages = [{"role": "system", "content": system}] if system.strip() else []
     if image_url:
         content = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": image_url}}]
         messages.append({"role": "user", "content": content})
     else:
         messages.append({"role": "user", "content": user})
-    body = _request(
-        base_url.rstrip("/") + "/chat/completions",
-        {"model": model, "messages": messages, "temperature": temperature},
-    )
+    payload = {"model": model, "messages": messages, "temperature": temperature}
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    body = _request(base_url.rstrip("/") + "/chat/completions", payload)
     try:
-        content = body["choices"][0]["message"]["content"] or ""
+        choice = body["choices"][0]
+        content = choice["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("サーバーの応答を読めませんでした。") from exc
+    cut = choice.get("finish_reason") == "length"
     # 考える過程を出すモデル (<think>...</think>) は、その部分を除く
-    return _THINK_RE.sub("", content).strip()
+    content = _THINK_RE.sub("", content)
+    if cut and "<think>" in content.lower():
+        # 考えている途中で上限に来た (答えまで届いていない)
+        raise LLMError("考えている途中で長さの上限に達しました。上限を大きくするか、考える過程を出さないモデルを使ってください。")
+    return content.strip(), cut
 
 
 def list_models(base_url: str) -> list[str]:

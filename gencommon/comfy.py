@@ -1043,6 +1043,46 @@ def rename_in_history(renames: dict[str, str], app_name: Optional[str] = None) -
     return changed
 
 
+def copy_in_history(copies: dict[str, str], app_name: Optional[str] = None) -> int:
+    """出来たファイルをコピーしたとき、その記録の写しを書き足す (コピーの側の記録になるように)。
+
+    copies は {元のパス: コピーのパス}。出来たファイル (output) が copies にある記録を写し、
+    写しの output・source・origin は copies にあればコピーのパスにする。戻り値は書き足した行の数。
+    この PC の記録だけを読み書きする (共有の置き場所の、ほかの PC の記録は写さない)。
+    """
+    if not copies:
+        return 0
+    table = {os.path.normcase(os.path.abspath(old)): new for old, new in copies.items()}
+
+    def mapped(value: str) -> Optional[str]:
+        return table.get(os.path.normcase(os.path.abspath(value))) if value else None
+
+    path, _other = _history_path(app_name)
+    added = []
+    try:
+        with _history_lock:
+            if not path.is_file():
+                return 0
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict) or mapped(_str(data, "output")) is None:
+                    continue
+                for key in ("source", "output", "origin"):
+                    new = mapped(_str(data, key))
+                    if new is not None:
+                        data[key] = new
+                added.append(json.dumps(data, ensure_ascii=False))
+            if added:
+                with path.open("a", encoding="utf-8", newline="") as f:
+                    f.write("".join(x + "\r\n" for x in added))
+    except (OSError, UnicodeDecodeError):
+        return 0
+    return len(added)
+
+
 def _rename_in_file(path: Path, mapped) -> int:
     changed = 0
     try:
