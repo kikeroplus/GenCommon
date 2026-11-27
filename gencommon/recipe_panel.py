@@ -6,7 +6,7 @@ PromptWordCrafter・MuseFactory で共通 (recipe_link.py。PrismLab の docs\\s
 
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPolygonF
@@ -94,6 +94,8 @@ class RecipePanel(QGroupBox):
     def __init__(self, files: Callable[[], list[Path]], parent=None):
         super().__init__("生成 (PrismLab のレシピ)", parent)
         self.files = files
+        # 頼む直前に呼ぶ (頼むファイルの並び → False なら頼まない)。PWC は編集中のテキストを保存する (2026-11-27)
+        self.before_start: Optional[Callable[[list], bool]] = None
         self._stamp = -1.0
         self._recipes: list[recipe_link.PublishedRecipe] = []
         self._mine: dict[str, float] = {}  # このアプリを開いてから頼んだもの (番号 → 頼んだ時刻)
@@ -207,6 +209,8 @@ class RecipePanel(QGroupBox):
         if total > CONFIRM_COUNT and QMessageBox.question(
                 self, "PrismLab のレシピ", f"「{recipe.name}」で {total} 件を生成します。よろしいですか？",
                 QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Ok:
+            return
+        if self.before_start is not None and not self.before_start(files):
             return
         rid, error = recipe_link.run(recipe, files)
         if error:
